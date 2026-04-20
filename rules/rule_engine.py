@@ -1,297 +1,474 @@
 """
-APEX-ENGINE EPL v1.3 — Moteur des 11 regles contextuelles
-Applique les regles dans l'ordre et retourne :
-- probs ajustees {home, draw, away}
-- liste des regles actives
-- liste des moratoriums bloques
+APEX-ENGINE EPL v1.3 — Moteur des 11 règles contextuelles.
+Chaque règle modifie les probabilités ou déclenche un moratorium.
 """
 import logging
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-# ── Parametres des regles ─────────────────────────────────────────
+# ── Constantes ────────────────────────────────────────────────────
 
-# Tiers EPL
-TIER_MAP = {
-    "Arsenal": 1, "Manchester City": 1, "Liverpool": 1,
-    "Chelsea": 2, "Newcastle United": 2, "Manchester United": 2,
-    "Tottenham": 2, "Tottenham Hotspur": 2,
-    "Aston Villa": 3, "Brighton": 3, "Brighton & Hove Albion": 3,
-    "Fulham": 3, "West Ham": 3, "West Ham United": 3,
-    "Bournemouth": 3, "AFC Bournemouth": 3,
-    "Brentford": 4, "Crystal Palace": 4,
-    "Everton": 4, "Wolverhampton": 4, "Wolves": 4,
-    "Burnley": 5, "Sunderland": 5, "Leeds": 5, "Leeds United": 5,
-    "Nottingham Forest": 5, "Southampton": 5,
-}
+EPL_DERBIES = [
+    frozenset(["Manchester City",    "Manchester United"]),
+    frozenset(["Arsenal",            "Tottenham"]),
+    frozenset(["Liverpool",          "Everton"]),
+    frozenset(["Chelsea",            "Fulham"]),
+    frozenset(["Chelsea",            "Arsenal"]),
+    frozenset(["Newcastle United",   "Sunderland"]),
+    frozenset(["Leeds United",       "Manchester United"]),
+    frozenset(["Crystal Palace",     "Brighton"]),
+]
 
 BIG_SIX = {
     "Arsenal", "Chelsea", "Liverpool",
-    "Manchester City", "Manchester United",
-    "Tottenham", "Tottenham Hotspur"
+    "Manchester City", "Manchester United", "Tottenham"
 }
 
-DERBIES = [
-    {"Arsenal", "Tottenham"}, {"Arsenal", "Tottenham Hotspur"},
-    {"Liverpool", "Everton"},
-    {"Manchester United", "Manchester City"},
-    {"Chelsea", "Fulham"},
-    {"Crystal Palace", "Brighton"}, {"Crystal Palace", "Brighton & Hove Albion"},
-]
+TIER_1 = {"Arsenal", "Manchester City", "Liverpool"}
+TIER_2 = {"Chelsea", "Newcastle United", "Manchester United", "Tottenham"}
+TOP_4  = TIER_1 | {"Arsenal"}  # top 4 dynamique — approximation saison
 
-# Scores d'enjeu /10
 STAKE_SCORES = {
-    "title":              10,
-    "cl_direct":          10,
-    "top4_cl":             8,
-    "el_direct":           8,
-    "conference":          6,
-    "mid_table":           3,
-    "relegation_playoff":  8,
-    "relegation_direct":  10,
-    "secure":              2,
+    "title":             10,
+    "cl_direct":         10,
+    "top4_cl":            8,
+    "el_direct":          8,
+    "conference":         6,
+    "mid_table":          3,
+    "relegation_playoff": 8,
+    "relegation_direct": 10,
+    "mid_secure":         2,
 }
 
 
-def get_tier(team_name):
-    for k, v in TIER_MAP.items():
-        if k.lower() in team_name.lower() or team_name.lower() in k.lower():
-            return v
-    return 4  # default mid-table
+# ── Helpers ────────────────────────────────────────────────────────
+
+def _clamp(v, lo=0.0, hi=1.0):
+    return max(lo, min(hi, v))
 
 
-def is_derby(home, away):
-    pair = {home, away}
-    for d in DERBIES:
-        if pair == d or (home in d and away in d):
+def _normalise(probs):
+    total = sum(probs.values())
+    if total <= 0:
+        return probs
+    return {k: round(v / total, 4) for k, v in probs.items()}
+
+
+def _shift_toward_draw(probs, boost, from_key="home"):
+    """Retire `boost` du `from_key` et l'ajoute au draw."""
+    p = dict(probs)
+    actual = min(boost, p.get(from_key, 0))
+    p["draw"]    = _clamp(p.get("draw",    0) + actual)
+    p[from_key]  = _clamp(p.get(from_key,  0) - actual)
+    return _normalise(p)
+
+
+def _shift_toward_away(probs, boost):
+    """Retire `boost` du home et l'ajoute à l'away."""
+    p = dict(probs)
+    actual = min(boost, p.get("home", 0))
+    p["away"] = _clamp(p.get("away", 0) + actual)
+    p["home"] = _clamp(p.get("home", 0) - actual)
+    return _normalise(p)
+
+
+# ── Règle 1 — Moratorium Under 2.5 ────────────────────────────────
+
+def r1_u25_moratorium(home_name, home_tier):
+    """
+    Tier 1 ou Tier 2 à domicile → moratorium absolu Under 2.5.
+    """
+    if home_tier in (1, 2):
+        return {
+            "blocked_market": "under25",
+            "reason": f"Moratorium U2.5 — {home_name} Tier {home_tier} domicile",
+        }
+    return None
+
+
+# ── Règle 2 — Moratorium BTTS Non ─────────────────────────────────
+
+def r2_btts_non_moratorium(home_name, away_name, is_derby,
+                            home_stake, away_stake):
+    """
+    Derby ou enjeu offensif élevé → moratorium BTTS Non.
+    """
+    if is_derby:
+        return {
+            "blocked_market": "btts_no",
+            "reason": f"Moratorium BTTS Non — Derby EPL",
+        }
+    if home_stake >= 8 or away_stake >= 8:
+        return {
+            "blocked_market": "btts_no",
+            "reason": "Moratorium BTTS Non — enjeu offensif >= 8/10",
+        }
+    return None
+
+
+# ── Règle 3 — Derby ────────────────────────────────────────────────
+
+def r3_derby(home_name, away_name):
+    pair = frozenset([home_name, away_name])
+    for derby in EPL_DERBIES:
+        if pair == derby:
             return True
     return False
 
 
-def is_big6(team):
-    return any(b.lower() in team.lower() for b in BIG_SIX)
+# ── Règle 4 — Top-of-Table Compression ─────────────────────────────
 
-
-def apply_all_rules(home_name, away_name, probs, context):
+def r4_top4_compression(home_name, away_name, xg_home, xg_away):
     """
-    Applique les 11 regles v1.3.
+    Top 4 vs Top 4 → compression ×0.82 sur les xG.
+    """
+    if home_name in TOP_4 and away_name in TOP_4:
+        return round(xg_home * 0.82, 3), round(xg_away * 0.82, 3), True
+    return xg_home, xg_away, False
 
-    context = {
-        # Donnees de base
-        "home_tier": int,
-        "away_tier": int,
-        "venue_capacity": int,
 
-        # Fatigue / calendrier
-        "home_fatigue_coeff": float,  # deja applique sur xG
-        "away_fatigue_coeff": float,
+# ── Règle 5 — Big 6 Away ──────────────────────────────────────────
 
-        # Blessures
-        "home_inj_count": int,
-        "away_inj_count": int,
-        "home_acl_active": bool,   # >= 3 joueurs meme ligne
-        "away_acl_active": bool,
-        "home_acl_factor": float,  # 1.5 ou 2.0
-        "away_acl_factor": float,
+def r5_big6_away(away_name, away_raw_odds):
+    """
+    Big 6 en déplacement avec cote > 2.20 → signal value potentiel.
+    """
+    if away_name in BIG_SIX and away_raw_odds > 2.20:
+        return {
+            "flag":   "BIG6_AWAY_VALUE",
+            "reason": f"{away_name} Big 6 away @ {away_raw_odds:.2f} > 2.20",
+        }
+    return None
 
-        # Regles UCL/UEL
-        "te_home": bool,           # Trauma Europeen home
-        "te_away": bool,
-        "te_goals": int,           # buts encaisses en euro
-        "eba_away": bool,          # Europa Bounce Away
-        "eba_home": bool,
 
-        # H2H
-        "h2h_avg_goals": float,
+# ── Règle 6 — H2H High-Score Pattern (HSP) ────────────────────────
 
-        # CCR
-        "home_ccr_ratio": float,   # goals/xG
-        "away_ccr_ratio": float,
+def r6_hsp(h2h_matches, probs):
+    """
+    Si moy. buts 2 derniers H2H >= 3.0 → redistribution vers le draw.
+    Non cumulatif avec ESY — prendre le max.
+    """
+    if len(h2h_matches) < 2:
+        return probs, 0.0
 
-        # Enjeux
-        "home_stake_score": int,
-        "away_stake_score": int,
+    last2 = sorted(h2h_matches, key=lambda x: x.get("date", ""), reverse=True)[:2]
+    avg_goals = sum(m.get("total_goals", 0) for m in last2) / 2
+
+    if avg_goals >= 4.0:
+        boost = 0.08
+    elif avg_goals >= 3.0:
+        boost = 0.05
+    else:
+        return probs, 0.0
+
+    fav_key = "home" if probs["home"] >= probs["away"] else "away"
+    new_probs = _shift_toward_draw(probs, boost, from_key=fav_key)
+    logger.info(f"R6 HSP active: avg {avg_goals:.1f} buts H2H → +{boost:.0%} draw")
+    return new_probs, boost
+
+
+# ── Règle 7 — Conversion Crisis Reversal (CCR) ────────────────────
+
+def r7_ccr(team_stats, ais_f_raw):
+    """
+    Ratio goals/xG < 0.70 sur 4+ matchs → plafonne AIS-F à -10%.
+    Retourne l'AIS-F net plafonné et le flag.
+    """
+    ccr_ratio = team_stats.get("ccr_ratio", 1.0)
+    matches   = team_stats.get("ccr_matches", 0)
+
+    if matches >= 4 and ccr_ratio < 0.70:
+        capped = max(ais_f_raw, -0.10)
+        flag = "RÉGRESSION IMMINENTE" if matches <= 5 else "SNAP ATTENDU"
+        logger.info(f"R7 CCR active: ratio {ccr_ratio:.2f} → AIS-F cappé {capped:.0%}")
+        return capped, flag
+
+    return ais_f_raw, None
+
+
+# ── Règle 8 — Enjeu Symétrique (ESY) ──────────────────────────────
+
+def r8_esy(home_stake, away_stake, probs):
+    """
+    Les deux enjeux >= 6/10 et non-opposés → +5% draw.
+    Non cumulatif avec HSP — prendre le max.
+    """
+    if home_stake >= 6 and away_stake >= 6:
+        # Vérifier qu'ils ne sont pas diamétralement opposés
+        # (relégation vs titre = opposés → pas d'ESY)
+        if not _are_opposed(home_stake, away_stake):
+            boost = 0.05
+            fav_key = "home" if probs["home"] >= probs["away"] else "away"
+            new_probs = _shift_toward_draw(probs, boost, from_key=fav_key)
+            logger.info(f"R8 ESY active: stakes {home_stake}/{away_stake} → +{boost:.0%} draw")
+            return new_probs, boost
+
+    return probs, 0.0
+
+
+def _are_opposed(s1, s2):
+    """Deux enjeux sont opposés si l'un gagne uniquement si l'autre perd."""
+    return (s1 >= 9 and s2 <= 3) or (s2 >= 9 and s1 <= 3)
+
+
+# ── Règle 9 — AIS-F Ligne Critique (ACL) ──────────────────────────
+
+def r9_acl(lineup_data, probs, is_home_team):
+    """
+    >= 3 absences sur même ligne fonctionnelle → multiplicateur ACL.
+    R12 (v1.4) : si ACL home Tier 1 → boost away supplémentaire.
+    R13 (v1.4) : recommander DNB si ACL conditionnel.
+    """
+    if not lineup_data:
+        return probs, 1.0, None, False
+
+    acl_info = lineup_data.get("acl_check", {})
+    if not acl_info.get("active"):
+        return probs, 1.0, None, False
+
+    factor  = acl_info.get("factor", 1.0)
+    flag    = acl_info.get("flag", "LIGNE_CRITIQUE")
+    prefer_dnb = factor < 2.0  # R13
+
+    if is_home_team:
+        # ACL équipe domicile → avantage away
+        if factor >= 2.0:
+            shift = 0.12
+        else:
+            shift = 0.07
+
+        frac_away = 0.60
+        frac_draw = 0.40
+        p = dict(probs)
+        available = min(shift, p.get("home", 0))
+        p["away"] = _clamp(p.get("away", 0) + available * frac_away)
+        p["draw"] = _clamp(p.get("draw", 0) + available * frac_draw)
+        p["home"] = _clamp(p.get("home", 0) - available)
+        new_probs = _normalise(p)
+
+    else:
+        # ACL équipe away → avantage home
+        if factor >= 2.0:
+            shift = 0.10
+        else:
+            shift = 0.06
+        new_probs = _shift_toward_away(
+            {**probs, "home": probs["away"], "away": probs["home"]},
+            shift
+        )
+        # Remettre dans le bon sens
+        new_probs = {"home": new_probs["away"],
+                     "draw": new_probs["draw"],
+                     "away": new_probs["home"]}
+        new_probs = _normalise(new_probs)
+
+    logger.info(f"R9 ACL active: factor {factor} flag={flag}")
+    return new_probs, factor, flag, prefer_dnb
+
+
+# ── Règle 10 — Trauma Européen (TE) ────────────────────────────────
+
+def r10_te(te_goals_conceded, te_hours_before, probs, is_home_team):
+    """
+    >= 5 buts concédés en euro dans les 96h → coefficient TE.
+    """
+    if te_goals_conceded < 5 or te_hours_before > 96:
+        return probs, False
+
+    if te_goals_conceded >= 7:
+        away_boost = 0.10
+    else:
+        away_boost = 0.06
+
+    # TE réduit si > 72h ou si derby
+    if te_hours_before > 72:
+        away_boost = 0.04
+
+    if is_home_team:
+        # L'équipe traumatisée est à domicile → boost away
+        p = dict(probs)
+        actual = min(away_boost, p.get("home", 0))
+        p["away"] = _clamp(p.get("away", 0) + actual)
+        p["home"] = _clamp(p.get("home", 0) - actual)
+        new_probs = _normalise(p)
+    else:
+        # L'équipe traumatisée est à l'extérieur → boost home
+        p = dict(probs)
+        actual = min(away_boost, p.get("away", 0))
+        p["home"] = _clamp(p.get("home", 0) + actual)
+        p["away"] = _clamp(p.get("away", 0) - actual)
+        new_probs = _normalise(p)
+
+    logger.info(f"R10 TE active: {te_goals_conceded} buts concédés → boost {away_boost:.0%}")
+    return new_probs, True
+
+
+# ── Règle 11 — Europa Bounce Away (EBA) ────────────────────────────
+
+def r11_eba(eba_active, eba_victory, rotations, xg_away):
+    """
+    Victoire coupe + rotation >= 4 titulaires <= 72h → bonus xG away.
+    """
+    if not eba_active or not eba_victory:
+        return xg_away, False
+
+    if rotations >= 4:
+        bonus = 1.10
+        logger.info(f"R11 EBA active: victoire coupe + {rotations} rotations → xG away ×{bonus}")
+        return round(xg_away * bonus, 3), True
+
+    return xg_away, False
+
+
+# ── Orchestrateur principal ─────────────────────────────────────────
+
+def apply_all_rules(match_ctx, probs, xg_home, xg_away):
+    """
+    Applique les 11 règles dans l'ordre.
+
+    match_ctx = {
+        "home_name", "away_name",
+        "home_tier", "away_tier",
+        "home_stake", "away_stake",
+        "home_lineup", "away_lineup",
+        "h2h_matches",
+        "home_te_goals", "home_te_hours",
+        "away_te_goals", "away_te_hours",
+        "away_eba_active", "away_eba_victory", "away_eba_rotations",
+        "home_raw_odds", "away_raw_odds",
+        "home_stats", "away_stats",
+        "home_ais_f_raw", "away_ais_f_raw",
     }
 
-    Retourne: (probs_ajustees, moratoriums, rules_active)
+    Retourne (probs_ajustées, moratoriums, rules_active, xg_home, xg_away)
     """
-    adj        = probs.copy()
+    p          = dict(probs)
     moratoriums = []
     rules_active = []
 
-    home_tier = context.get("home_tier", get_tier(home_name))
-    away_tier = context.get("away_tier", get_tier(away_name))
-    derby     = is_derby(home_name, away_name)
+    home = match_ctx.get("home_name", "")
+    away = match_ctx.get("away_name", "")
 
-    # ── R1 : Moratorium Under 2.5 ────────────────────────────────
-    if home_tier in (1, 2):
-        moratoriums.append({
-            "rule":   "R1_UNDER25",
-            "market": "under25",
-            "reason": f"Tier {home_tier} a domicile — moratorium absolu",
-        })
-
-    # ── R2 : Moratorium BTTS Non ─────────────────────────────────
-    if derby or home_tier == 1:
-        moratoriums.append({
-            "rule":   "R2_BTTS_NON",
-            "market": "btts_no",
-            "reason": "Derby ou Tier 1 — BTTS Non trop risque",
-        })
-
-    # ── R3 : Derby ───────────────────────────────────────────────
-    if derby:
-        moratoriums.append({
-            "rule":   "R3_DERBY",
-            "market": "under25",
-            "reason": "Derby EPL — variance emotionnelle maximale",
-        })
-        moratoriums.append({
-            "rule":   "R3_DERBY",
-            "market": "btts_no",
-            "reason": "Derby EPL — pas de marche defensif",
-        })
+    # ── R3 : Derby ────────────────────────────────────────────────
+    is_derby = r3_derby(home, away)
+    if is_derby:
         rules_active.append("R3_DERBY")
-        logger.info(f"R3 Derby detecte: {home_name} vs {away_name}")
 
-    # ── R4 : Top-4 Compression ───────────────────────────────────
-    if home_tier <= 2 and away_tier <= 2:
+    # ── R4 : Top-4 compression ────────────────────────────────────
+    xg_home, xg_away, is_top4 = r4_top4_compression(home, away, xg_home, xg_away)
+    if is_top4:
         rules_active.append("R4_TOP4_COMPRESSION")
-        # Deja applique via xG compression dans compute_xg
-        logger.info("R4 Top4 compression active")
 
-    # ── R5 : Big 6 Away ──────────────────────────────────────────
-    if is_big6(away_name) and away_tier >= 3:
-        rules_active.append("R5_BIG6_AWAY")
-        logger.info(f"R5 Big6 Away: {away_name} en deplacement")
+    # ── R11 : EBA ─────────────────────────────────────────────────
+    xg_away, eba_ok = r11_eba(
+        match_ctx.get("away_eba_active",    False),
+        match_ctx.get("away_eba_victory",   False),
+        match_ctx.get("away_eba_rotations", 0),
+        xg_away,
+    )
+    if eba_ok:
+        rules_active.append("R11_EBA_BOUNCE")
 
-    # ── R6 : H2H High-Score Pattern (HSP) ────────────────────────
-    h2h_avg = context.get("h2h_avg_goals", 0)
-    hsp_boost = 0
-    if h2h_avg >= 4.0:
-        hsp_boost = 0.08
-    elif h2h_avg >= 3.0:
-        hsp_boost = 0.05
+    # ── R10 : TE home ─────────────────────────────────────────────
+    p, te_home = r10_te(
+        match_ctx.get("home_te_goals", 0),
+        match_ctx.get("home_te_hours", 999),
+        p, is_home_team=True,
+    )
+    if te_home:
+        rules_active.append(f"R10_TE_HOME ({match_ctx.get('home_te_goals')} buts)")
 
+    # ── R10 : TE away ─────────────────────────────────────────────
+    p, te_away = r10_te(
+        match_ctx.get("away_te_goals", 0),
+        match_ctx.get("away_te_hours", 999),
+        p, is_home_team=False,
+    )
+    if te_away:
+        rules_active.append(f"R10_TE_AWAY ({match_ctx.get('away_te_goals')} buts)")
+
+    # ── R9 : ACL home ─────────────────────────────────────────────
+    p, acl_factor_h, acl_flag_h, prefer_dnb_h = r9_acl(
+        match_ctx.get("home_lineup"), p, is_home_team=True
+    )
+    if acl_flag_h:
+        rules_active.append(f"R9_ACL_HOME [{acl_flag_h}]")
+
+    # ── R9 : ACL away ─────────────────────────────────────────────
+    p, acl_factor_a, acl_flag_a, prefer_dnb_a = r9_acl(
+        match_ctx.get("away_lineup"), p, is_home_team=False
+    )
+    if acl_flag_a:
+        rules_active.append(f"R9_ACL_AWAY [{acl_flag_a}]")
+
+    # ── R6 : HSP ──────────────────────────────────────────────────
+    p, hsp_boost = r6_hsp(match_ctx.get("h2h_matches", []), p)
     if hsp_boost > 0:
-        fav = max(adj, key=adj.get)
-        adj["draw"] = adj.get("draw", 0) + hsp_boost
-        adj[fav]    = max(0, adj.get(fav, 0) - hsp_boost)
-        rules_active.append(f"R6_HSP +{hsp_boost:.0%} draw (H2H moy {h2h_avg:.1f} buts)")
-        logger.info(f"R6 HSP: +{hsp_boost:.0%} draw")
+        rules_active.append(f"R6_HSP (+{hsp_boost:.0%} draw)")
 
-    # ── R7 : CCR (Conversion Crisis Reversal) ────────────────────
-    home_ccr = context.get("home_ccr_ratio", 1.0)
-    away_ccr = context.get("away_ccr_ratio", 1.0)
-    if home_ccr < 0.70:
-        rules_active.append(f"R7_CCR_HOME ratio={home_ccr:.2f} — REGRESSION IMMINENTE")
-    if away_ccr < 0.70:
-        rules_active.append(f"R7_CCR_AWAY ratio={away_ccr:.2f} — SNAP ATTENDU")
+    # ── R8 : ESY ──────────────────────────────────────────────────
+    p, esy_boost = r8_esy(
+        match_ctx.get("home_stake", 3),
+        match_ctx.get("away_stake", 3),
+        p,
+    )
+    if esy_boost > 0:
+        rules_active.append(f"R8_ESY (+{esy_boost:.0%} draw)")
 
-    # ── R8 : Enjeu Symetrique (ESY) ──────────────────────────────
-    hs = context.get("home_stake_score", 3)
-    as_ = context.get("away_stake_score", 3)
-    esy_boost = 0
-    if hs >= 6 and as_ >= 6:
-        esy_boost = 0.05
-        fav = max(adj, key=adj.get)
-        adj["draw"] = adj.get("draw", 0) + esy_boost
-        adj[fav]    = max(0, adj.get(fav, 0) - esy_boost)
-        rules_active.append(f"R8_ESY +5% draw (enjeux {hs}/10 vs {as_}/10)")
-        logger.info(f"R8 ESY: +5% draw")
-
-    # R6 + R8 non cumulatifs — prendre le max
+    # ── HSP + ESY : non-cumulatif → reprendre le max ──────────────
     if hsp_boost > 0 and esy_boost > 0:
-        # Annuler le plus petit et ne garder que le max
-        min_boost = min(hsp_boost, esy_boost)
-        fav = max(adj, key=adj.get)
-        adj["draw"] = adj.get("draw", 0) - min_boost
-        adj[fav]    = adj.get(fav, 0) + min_boost
-        rules_active.append(f"R6+R8 non-cumulatif — max garde")
+        max_boost = max(hsp_boost, esy_boost)
+        fav_key   = "home" if probs["home"] >= probs["away"] else "away"
+        p_reset   = dict(probs)
+        p_reset["draw"]   = _clamp(p_reset.get("draw", 0)   + max_boost)
+        p_reset[fav_key]  = _clamp(p_reset.get(fav_key, 0)  - max_boost)
+        p = _normalise(p_reset)
+        rules_active = [r for r in rules_active
+                        if "R6_HSP" not in r and "R8_ESY" not in r]
+        rules_active.append(f"R6+R8_MAX_BOOST (+{max_boost:.0%} draw)")
 
-    # ── R9 : ACL (AIS-F Ligne Critique) ──────────────────────────
-    if context.get("home_acl_active"):
-        factor = context.get("home_acl_factor", 1.5)
-        if factor >= 2.0:
-            # Effondrement ligne : fort boost away
-            adj["away"] = adj.get("away", 0) + 0.12
-            adj["home"] = max(0, adj.get("home", 0) - 0.08)
-            adj["draw"] = max(0, adj.get("draw", 0) - 0.04)
-            rules_active.append("R9_ACL_HOME x2.0 EFFONDREMENT LIGNE")
-        else:
-            adj["away"] = adj.get("away", 0) + 0.07
-            adj["home"] = max(0, adj.get("home", 0) - 0.05)
-            adj["draw"] = max(0, adj.get("draw", 0) - 0.02)
-            # R12 v1.4 : si Tier 1 home + ACL -> extra boost away
-            if home_tier == 1:
-                adj["away"] = adj.get("away", 0) + 0.08
-                adj["home"] = max(0, adj.get("home", 0) - 0.08)
-                rules_active.append("R12_ACL_TIER1_HOME +8% away (v1.4)")
-            rules_active.append("R9_ACL_HOME x1.5 LIGNE CRITIQUE")
+    # ── R1 : Moratorium U2.5 ──────────────────────────────────────
+    m1 = r1_u25_moratorium(home, match_ctx.get("home_tier", 4))
+    if m1:
+        moratoriums.append(m1)
 
-    if context.get("away_acl_active"):
-        factor = context.get("away_acl_factor", 1.5)
-        if factor >= 2.0:
-            adj["home"] = adj.get("home", 0) + 0.10
-            adj["away"] = max(0, adj.get("away", 0) - 0.07)
-            adj["draw"] = max(0, adj.get("draw", 0) - 0.03)
-            rules_active.append("R9_ACL_AWAY x2.0 EFFONDREMENT LIGNE")
-        else:
-            adj["home"] = adj.get("home", 0) + 0.06
-            adj["away"] = max(0, adj.get("away", 0) - 0.04)
-            adj["draw"] = max(0, adj.get("draw", 0) - 0.02)
-            # R14 v1.4 : si home en zone relégation + ACL away -> reduire impact
-            if hs >= 9:
-                reduction = 0.25
-                for k in adj:
-                    adj[k] = probs[k] + (adj[k] - probs[k]) * (1 - reduction)
-                rules_active.append("R14_MSRD relégation domicile reduit ACL 25%")
-            rules_active.append("R9_ACL_AWAY x1.5 LIGNE CRITIQUE")
+    # ── R2 : Moratorium BTTS Non ──────────────────────────────────
+    m2 = r2_btts_non_moratorium(
+        home, away, is_derby,
+        match_ctx.get("home_stake", 3),
+        match_ctx.get("away_stake", 3),
+    )
+    if m2:
+        moratoriums.append(m2)
 
-    # ── R10 : Trauma Europeen (TE) ────────────────────────────────
-    if context.get("te_home"):
-        te_goals = context.get("te_goals", 5)
-        if te_goals >= 7:
-            adj["away"] = adj.get("away", 0) + 0.10
-            adj["home"] = max(0, adj.get("home", 0) - 0.10)
-            rules_active.append(f"R10_TE_HOME {te_goals} buts encaisses — TRAUMA x0.75")
-        else:
-            adj["away"] = adj.get("away", 0) + 0.06
-            adj["home"] = max(0, adj.get("home", 0) - 0.06)
-            rules_active.append(f"R10_TE_HOME {te_goals} buts encaisses — x0.85")
+    # ── R3 : Derby → moratorium BTTS Non + U2.5 ───────────────────
+    if is_derby:
+        moratoriums.append({
+            "blocked_market": "under25",
+            "reason": "Derby EPL — pas de marché défensif",
+        })
 
-    if context.get("te_away"):
-        te_goals = context.get("te_goals", 5)
-        if te_goals >= 7:
-            adj["home"] = adj.get("home", 0) + 0.10
-            adj["away"] = max(0, adj.get("away", 0) - 0.10)
-            rules_active.append(f"R10_TE_AWAY {te_goals} buts encaisses — TRAUMA x0.75")
-        else:
-            adj["home"] = adj.get("home", 0) + 0.06
-            adj["away"] = max(0, adj.get("away", 0) - 0.06)
-            rules_active.append(f"R10_TE_AWAY {te_goals} buts encaisses — x0.85")
+    # ── R5 : Big 6 Away ───────────────────────────────────────────
+    r5 = r5_big6_away(away, match_ctx.get("away_raw_odds", 1.5))
+    if r5:
+        rules_active.append(f"R5_{r5['flag']}")
 
-    # ── R11 : Europa Bounce Away (EBA) ───────────────────────────
-    if context.get("eba_away"):
-        adj["away"] = adj.get("away", 0) + 0.05
-        adj["home"] = max(0, adj.get("home", 0) - 0.05)
-        rules_active.append("R11_EBA_AWAY victoire coupe + rotation — +5% away")
+    # ── R14 (v1.4) : MSRD ─────────────────────────────────────────
+    # Survie relégation domicile réduit impact ACL de 25%
+    home_stake = match_ctx.get("home_stake", 3)
+    if acl_flag_h and home_stake >= 9:
+        # Atténuer l'effet ACL de 25% en rapprochant des probs originales
+        for k in p:
+            p[k] = round(probs[k] + (p[k] - probs[k]) * 0.75, 4)
+        p = _normalise(p)
+        rules_active.append("R14_MSRD (ACL réduit 25% — survie domicile)")
 
-    if context.get("eba_home"):
-        adj["home"] = adj.get("home", 0) + 0.03
-        adj["away"] = max(0, adj.get("away", 0) - 0.03)
-        rules_active.append("R11_EBA_HOME victoire coupe + rotation — +3% home")
+    # ── R15 (v1.4) : seuil edge réduit si ≥2 règles v1.3 ─────────
+    v13_rules = [r for r in rules_active
+                 if any(tag in r for tag in ["R6", "R8", "R9", "R10", "R11"])]
+    multi_rule_active = len(v13_rules) >= 2
 
-    # ── R15 v1.4 : Seuil edge reduit si >= 2 regles v1.3 actives ─
-    rules_v13 = [r for r in rules_active
-                 if any(tag in r for tag in
-                        ["R6_", "R7_", "R8_", "R9_", "R10_", "R11_"])]
-    if len(rules_v13) >= 2:
-        rules_active.append("R15_MULTI_RULE seuil edge 6%->5% (>= 2 regles v1.3)")
+    p = _normalise(p)
 
-    # ── Normaliser les probs ──────────────────────────────────────
-    total = sum(adj.values())
-    if total > 0:
-        adj = {k: round(v / total, 4) for k, v in adj.items()}
-
-    return adj, moratoriums, rules_active
+    return p, moratoriums, rules_active, xg_home, xg_away, multi_rule_active

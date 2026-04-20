@@ -21,51 +21,21 @@ CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "")
 DATA_DIR   = Path(os.getenv("RENDER_DISK_PATH", "./data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+# ── Tier mapping ───────────────────────────────────────────────────
+TEAM_TIERS = {
+    "Arsenal": 1, "Manchester City": 1, "Liverpool": 1,
+    "Chelsea": 2, "Newcastle United": 2, "Manchester United": 2, "Tottenham": 2,
+    "Aston Villa": 3, "Brighton": 3, "Fulham": 3,
+    "West Ham": 3, "Bournemouth": 3, "West Ham United": 3,
+    "Brentford": 4, "Crystal Palace": 4, "Everton": 4, "Wolverhampton Wanderers": 4,
+    "Burnley": 5, "Sunderland": 5, "Leeds United": 5, "Nottingham Forest": 5,
+}
 
-def build_rule_context(fix, home_inj, away_inj, h2h, home_tier, away_tier):
-    """
-    Construit le contexte des regles v1.3 a partir des donnees disponibles.
-    Les champs UCL/CCR/TE/EBA sont a 0 par defaut — 
-    seront remplis quand les sources correspondantes seront integrees.
-    """
-    # H2H avg goals
-    h2h_avg = 0.0
-    if h2h:
-        h2h_avg = sum(m.get("total_goals", 0) for m in h2h) / len(h2h)
-
-    # ACL check simplifie : > 3 blesses = potentiellement ACL
-    home_acl = len(home_inj) >= 3
-    away_acl = len(away_inj) >= 3
-    home_acl_factor = 2.0 if len(home_inj) >= 4 else 1.5
-    away_acl_factor = 2.0 if len(away_inj) >= 4 else 1.5
-
-    # Enjeux : estimation par tier et position saison
-    home_stake = 6 if home_tier <= 2 else (8 if home_tier == 5 else 3)
-    away_stake = 6 if away_tier <= 2 else (8 if away_tier == 5 else 3)
-
-    return {
-        "home_tier":           home_tier,
-        "away_tier":           away_tier,
-        "venue_capacity":      fix.get("venue_capacity", 0),
-        "home_fatigue_coeff":  1.0,
-        "away_fatigue_coeff":  1.0,
-        "home_inj_count":      len(home_inj),
-        "away_inj_count":      len(away_inj),
-        "home_acl_active":     home_acl,
-        "away_acl_active":     away_acl,
-        "home_acl_factor":     home_acl_factor,
-        "away_acl_factor":     away_acl_factor,
-        "te_home":             False,
-        "te_away":             False,
-        "te_goals":            0,
-        "eba_away":            False,
-        "eba_home":            False,
-        "h2h_avg_goals":       round(h2h_avg, 2),
-        "home_ccr_ratio":      1.0,
-        "away_ccr_ratio":      1.0,
-        "home_stake_score":    home_stake,
-        "away_stake_score":    away_stake,
-    }
+def get_tier(name):
+    for k, v in TEAM_TIERS.items():
+        if k.lower() in name.lower() or name.lower() in k.lower():
+            return v
+    return 4
 
 
 async def run_pipeline():
@@ -76,7 +46,7 @@ async def run_pipeline():
     )
     from ingestion.odds_service import get_odds_for_match, get_reference_odds
     from models.dixon_coles import compute_xg, run_simulation
-    from rules.rule_engine import apply_all_rules, get_tier
+    from rules.rule_engine import apply_all_rules
     from decisions.verdict_engine import generate_verdicts, format_verdict_telegram
     from storage.signals_repo import save_signal, save_no_bet, log_pipeline_run
 
@@ -114,10 +84,8 @@ async def run_pipeline():
 
         n_inj_home = len(home_inj)
         n_inj_away = len(away_inj)
-
-        # AIS-F : -5% par blesse (max -25%)
-        ais_home = max(-0.25, -0.05 * min(n_inj_home, 5))
-        ais_away = max(-0.25, -0.05 * min(n_inj_away, 5))
+        ais_home   = max(-0.25, -0.05 * min(n_inj_home, 5))
+        ais_away   = max(-0.25, -0.05 * min(n_inj_away, 5))
 
         # DCS
         dcs = 55
@@ -128,11 +96,7 @@ async def run_pipeline():
         if h2h:                                       dcs += 5
         if n_inj_home > 0 or n_inj_away > 0:         dcs += 5
 
-        # Tiers
-        home_tier = get_tier(home_name)
-        away_tier = get_tier(away_name)
-
-        # xG Dixon-Coles
+        # xG de base
         xg_home, xg_away = compute_xg(
             home_stats, away_stats,
             home_capacity=fix.get("venue_capacity", 0),
@@ -140,41 +104,62 @@ async def run_pipeline():
             ais_f_away=ais_away,
         )
 
-        # Simulation Monte-Carlo
-        model = run_simulation(xg_home, xg_away)
-        probs = {"home": model["home"], "draw": model["draw"], "away": model["away"]}
+        # Probabilités initiales
+        model_base = run_simulation(xg_home, xg_away)
+        probs_base = {
+            "home": model_base["home"],
+            "draw": model_base["draw"],
+            "away": model_base["away"],
+        }
 
-        # ── APPLICATION DES 11 REGLES v1.3 ───────────────────────
-        rule_ctx = build_rule_context(
-            fix, home_inj, away_inj, h2h, home_tier, away_tier
+        # Contexte pour les règles
+        match_ctx = {
+            "home_name":  home_name,
+            "away_name":  away_name,
+            "home_tier":  get_tier(home_name),
+            "away_tier":  get_tier(away_name),
+            "home_stake": 5,   # défaut mid-table — à enrichir
+            "away_stake": 5,
+            "h2h_matches": h2h,
+            "home_lineup": None,
+            "away_lineup": None,
+            "home_te_goals": 0,
+            "home_te_hours": 999,
+            "away_te_goals": 0,
+            "away_te_hours": 999,
+            "away_eba_active":    False,
+            "away_eba_victory":   False,
+            "away_eba_rotations": 0,
+            "home_raw_odds": odds_1x2.get("home_raw", 2.0),
+            "away_raw_odds": odds_1x2.get("away_raw", 2.0),
+            "home_stats":    home_stats,
+            "away_stats":    away_stats,
+            "home_ais_f_raw": ais_home,
+            "away_ais_f_raw": ais_away,
+        }
+
+        # Appliquer les 11 règles
+        probs_adj, moratoriums, rules_active, xg_home_adj, xg_away_adj, multi_rule = (
+            apply_all_rules(match_ctx, probs_base, xg_home, xg_away)
         )
-        adj_probs, moratoriums, rules_active = apply_all_rules(
-            home_name, away_name, probs, rule_ctx
-        )
 
-        # Mettre a jour le modele avec les probs ajustees
-        model["home"] = adj_probs.get("home", model["home"])
-        model["draw"] = adj_probs.get("draw", model["draw"])
-        model["away"] = adj_probs.get("away", model["away"])
-
-        # Moratoriums bloques
-        blocked_markets = {m["market"] for m in moratoriums}
+        # Recalculer le modèle complet avec xG ajustés
+        model = run_simulation(xg_home_adj, xg_away_adj)
+        # Surcharger les probs 1X2 avec les probs ajustées par les règles
+        model["home"] = probs_adj["home"]
+        model["draw"] = probs_adj["draw"]
+        model["away"] = probs_adj["away"]
 
         # Verdicts
+        prefer_dnb = any("R9_ACL_HOME" in r for r in rules_active)
         verdicts = generate_verdicts(
             model, odds_1x2, odds_ou25, dcs,
-            moratoriums=list(blocked_markets)
+            moratoriums=moratoriums,
+            multi_rule_active=multi_rule,
+            prefer_dnb=prefer_dnb,
         )
 
-        # R15 : seuil reduit si >= 2 regles v1.3 actives
-        rules_v13 = [r for r in rules_active
-                     if any(t in r for t in
-                            ["R6_","R7_","R8_","R9_","R10_","R11_"])]
-        if len(rules_v13) >= 2 and "R15_MULTI_RULE" in " ".join(rules_active):
-            for v in verdicts:
-                v["r15_active"] = True
-
-        # Sauvegarder SQLite
+        # Sauvegarder dans SQLite
         if verdicts:
             for v in verdicts:
                 save_signal({
@@ -191,16 +176,15 @@ async def run_pipeline():
                     "max_stake_pct": v["max_stake_pct"],
                     "status":        v["status"],
                     "dcs_score":     dcs,
-                    "xg_home":       xg_home,
-                    "xg_away":       xg_away,
+                    "xg_home":       xg_home_adj,
+                    "xg_away":       xg_away_adj,
                     "odds_source":   odds_1x2.get("source", "reference"),
                 })
             total_signals += len(verdicts)
         else:
             save_no_bet(fixture_id, home_name, away_name,
-                        kickoff, dcs, xg_home, xg_away)
+                        kickoff, dcs, xg_home_adj, xg_away_adj)
 
-        # Telegram
         msg = format_verdict_telegram(
             home_name, away_name, kickoff, model, verdicts, dcs,
             n_inj_home=n_inj_home,
@@ -222,10 +206,11 @@ async def run_resolver():
     if stats and stats.get("resolved", 0) > 0:
         msg = (
             "=== APEX-EPL BILAN ===\n"
-            f"Signaux resolus: {stats['resolved']}\n"
-            f"Victoires: {stats['wins']} | Defaites: {stats['losses']}\n"
-            f"Win rate: {stats['win_rate']:.1%}\n"
-            f"P&L cumule: {stats['pnl_pct']:+.1%}"
+            f"Signaux resolus : {stats['resolved']}\n"
+            f"Victoires       : {stats['wins']}\n"
+            f"Defaites        : {stats['losses']}\n"
+            f"Win rate        : {stats['win_rate']:.1%}\n"
+            f"P&L cumule      : {stats['pnl_pct']:+.1%}"
         )
         await send_telegram(msg)
 
@@ -236,10 +221,7 @@ async def send_telegram(text):
     try:
         bot = Bot(token=BOT_TOKEN)
         for i in range(0, len(text), 4000):
-            await bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=text[i:i+4000],
-            )
+            await bot.send_message(chat_id=CHANNEL_ID, text=text[i:i+4000])
     except Exception as e:
         logger.error(f"Telegram erreur: {e}")
 
@@ -252,9 +234,9 @@ async def main():
     init_db()
 
     await send_telegram(
-        "APEX-OMEGA-EPL v1.3 demarre\n"
+        "APEX-OMEGA-EPL demarre\n"
         f"Date: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC\n"
-        "11 regles contextuelles actives | SQLite | Dixon-Coles"
+        "Etape 4 — 11 regles contextuelles v1.3 actives"
     )
 
     await run_pipeline()
