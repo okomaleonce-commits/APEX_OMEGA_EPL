@@ -1,8 +1,8 @@
 numpy==1.26.4
 requests==2.31.0
 python-telegram-bot==20.7
+httpx==0.25.2
 APScheduler==3.10.4
 beautifulsoup4==4.12.3
 python-dotenv==1.0.1
-httpx==0.26.0
 pydantic==1.10.13
