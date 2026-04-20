@@ -22,73 +22,80 @@ DATA_DIR   = Path(os.getenv("RENDER_DISK_PATH", "./data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
-# ── Pipeline principal ────────────────────────────────────────────
-
 async def run_pipeline():
-    """Fetch fixtures + cotes et publie un résumé sur Telegram."""
-    logger.info("=== PIPELINE DÉMARRÉ ===")
+    logger.info("=== PIPELINE DEMARRE ===")
 
-    from ingestion.fixtures_service import fetch_upcoming, fetch_team_stats, fetch_injuries
+    from ingestion.fixtures_service import (
+        fetch_upcoming, fetch_team_stats, fetch_injuries, fetch_h2h
+    )
     from ingestion.odds_service import get_odds_for_match
+    from models.dixon_coles import compute_xg, run_simulation
+    from decisions.verdict_engine import (
+        generate_verdicts, format_verdict_telegram
+    )
 
     fixtures = fetch_upcoming(days_ahead=2)
-    logger.info(f"{len(fixtures)} matchs à analyser")
+    logger.info(f"{len(fixtures)} matchs a analyser")
 
     if not fixtures:
-        await send_telegram("⚠️ *APEX-EPL* — Aucun match EPL à venir trouvé.")
+        await send_telegram("*APEX-EPL* — Aucun match EPL trouve.")
         return
 
-    lines = [f"📋 *APEX-OMEGA-EPL · {datetime.now(timezone.utc).strftime('%d/%m %H:%M')} UTC*\n"]
-
     for fix in fixtures:
-        home = fix["home_team"]
-        away = fix["away_team"]
-        ko   = fix["kickoff_utc"][:16].replace("T", " ")
+        home_name = fix["home_team"]
+        away_name = fix["away_team"]
+        kickoff   = fix["kickoff_utc"]
 
-        # Stats
+        logger.info(f"Analyse: {home_name} vs {away_name}")
+
+        # Données
         home_stats = fetch_team_stats(fix["home_team_id"])
         away_stats = fetch_team_stats(fix["away_team_id"])
+        home_inj   = fetch_injuries(fix["home_team_id"])
+        away_inj   = fetch_injuries(fix["away_team_id"])
+        h2h        = fetch_h2h(fix["home_team_id"], fix["away_team_id"])
+        odds_data  = get_odds_for_match(home_name, away_name)
 
-        # Blessés
-        home_inj = fetch_injuries(fix["home_team_id"])
-        away_inj = fetch_injuries(fix["away_team_id"])
+        odds_1x2  = odds_data.get("odds_1x2",  {})
+        odds_ou25 = odds_data.get("odds_ou25", {})
 
-        # Cotes
-        odds = get_odds_for_match(home, away)
-        odds_1x2 = odds.get("odds_1x2", {})
+        # AIS-F simple : -5% par blessé clé (max -25%)
+        ais_home = max(-0.25, -0.05 * min(len(home_inj), 5))
+        ais_away = max(-0.25, -0.05 * min(len(away_inj), 5))
 
-        # Résumé
-        gf_home = home_stats.get("goals_scored_avg",   "?")
-        ga_home = home_stats.get("goals_conceded_avg",  "?")
-        gf_away = away_stats.get("goals_scored_avg",   "?")
-        ga_away = away_stats.get("goals_conceded_avg",  "?")
+        # DCS simplifié
+        dcs = 60
+        if home_stats: dcs += 10
+        if away_stats: dcs += 10
+        if odds_1x2:   dcs += 15
+        if h2h:        dcs += 5
 
-        home_raw = odds_1x2.get("home_raw", "—")
-        draw_raw = odds_1x2.get("draw_raw", "—")
-        away_raw = odds_1x2.get("away_raw", "—")
-
-        n_inj_home = len(home_inj)
-        n_inj_away = len(away_inj)
-
-        lines.append(
-            f"⚽ *{home}* vs *{away}*\n"
-            f"🕐 {ko} UTC\n"
-            f"📊 Buts/match: {home} {gf_home}/{ga_home} | {away} {gf_away}/{ga_away}\n"
-            f"💰 Cotes: {home_raw} / {draw_raw} / {away_raw}\n"
-            f"🏥 Blessés: {home} {n_inj_home} | {away} {n_inj_away}\n"
+        # Modèle
+        xg_home, xg_away = compute_xg(
+            home_stats, away_stats,
+            home_capacity=fix.get("venue_capacity", 0),
+            ais_f_home=ais_home,
+            ais_f_away=ais_away,
         )
+        model = run_simulation(xg_home, xg_away)
 
-    await send_telegram("\n".join(lines))
-    logger.info("=== PIPELINE TERMINÉ ===")
+        # Verdicts
+        verdicts = generate_verdicts(model, odds_1x2, odds_ou25, dcs)
+
+        # Publier sur Telegram
+        msg = format_verdict_telegram(
+            home_name, away_name, kickoff, model, verdicts, dcs
+        )
+        await send_telegram(msg)
+
+    logger.info("=== PIPELINE TERMINE ===")
 
 
-async def send_telegram(text: str) -> None:
+async def send_telegram(text):
     if not BOT_TOKEN or not CHANNEL_ID:
-        logger.warning("Telegram non configuré")
         return
     try:
         bot = Bot(token=BOT_TOKEN)
-        # Telegram limite à 4096 caractères par message
         for i in range(0, len(text), 4000):
             await bot.send_message(
                 chat_id=CHANNEL_ID,
@@ -99,32 +106,22 @@ async def send_telegram(text: str) -> None:
         logger.error(f"Telegram erreur: {e}")
 
 
-# ── Main ──────────────────────────────────────────────────────────
-
 async def main():
     logger.info("=== APEX-OMEGA-EPL Bot starting ===")
     logger.info(f"Data directory: {DATA_DIR}")
 
     await send_telegram(
-        "✅ *APEX-OMEGA-EPL démarré*\n"
+        "*APEX-OMEGA-EPL demarré*\n"
         f"📅 {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC\n"
-        "_Pipeline Étape 1 — Ingestion données active_"
+        "_Étape 2 — Modèle Dixon-Coles actif_"
     )
 
-    # Lancer le pipeline immédiatement au démarrage
     await run_pipeline()
 
-    # Scheduler : pipeline toutes les 6 heures
     scheduler = AsyncIOScheduler(timezone="UTC")
-    scheduler.add_job(
-        run_pipeline,
-        trigger="cron",
-        hour="8,14,20",
-        minute=0,
-        id="pipeline_epl"
-    )
+    scheduler.add_job(run_pipeline, "cron", hour="8,14,20", minute=0)
     scheduler.start()
-    logger.info("Scheduler démarré — pipeline à 08h, 14h, 20h UTC")
+    logger.info("Scheduler actif — pipeline 08h/14h/20h UTC")
 
     while True:
         await asyncio.sleep(3600)
