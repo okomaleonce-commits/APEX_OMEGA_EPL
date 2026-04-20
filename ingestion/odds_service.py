@@ -179,3 +179,60 @@ def _demarginize_ou(ou):
         "under_prob": round((1/under) / total, 4),
         "margin":     round(total - 1.0, 4),
     }
+def get_reference_odds(home_team, away_team, home_stats, away_stats):
+    """
+    Génère des cotes de référence basées sur les stats quand
+    l'API ne retourne pas de cotes.
+    Utilise les probabilités Poisson inversées en cotes.
+    """
+    avg = 1.445
+
+    gf_h = home_stats.get("goals_scored_avg",  avg)
+    ga_h = home_stats.get("goals_conceded_avg", avg)
+    gf_a = away_stats.get("goals_scored_avg",  avg)
+    ga_a = away_stats.get("goals_conceded_avg", avg)
+
+    xg_h = (gf_h / avg) * (ga_a / avg) * avg * 1.08
+    xg_a = (gf_a / avg) * (ga_h / avg) * avg
+
+    xg_h = max(xg_h, 0.3)
+    xg_a = max(xg_a, 0.2)
+
+    import math
+
+    def poisson_win(mu_h, mu_a, max_g=8):
+        hw = dr = aw = 0.0
+        for h in range(max_g):
+            for a in range(max_g):
+                p = (math.exp(-mu_h) * mu_h**h / math.factorial(h) *
+                     math.exp(-mu_a) * mu_a**a / math.factorial(a))
+                if h > a:  hw += p
+                elif h == a: dr += p
+                else:        aw += p
+        return hw, dr, aw
+
+    hw, dr, aw = poisson_win(xg_h, xg_a)
+    total = hw + dr + aw
+
+    # Ajouter marge 5% (référence soft bookmaker)
+    margin = 0.05
+    hw_m = hw / total
+    dr_m = dr / total
+    aw_m = aw / total
+
+    home_raw = round(1 / (hw_m * (1 + margin)), 2)
+    draw_raw = round(1 / (dr_m * (1 + margin)), 2)
+    away_raw = round(1 / (aw_m * (1 + margin)), 2)
+
+    t = (1/home_raw) + (1/draw_raw) + (1/away_raw)
+
+    return {
+        "home_raw":  home_raw,
+        "draw_raw":  draw_raw,
+        "away_raw":  away_raw,
+        "home_prob": round((1/home_raw) / t, 4),
+        "draw_prob": round((1/draw_raw) / t, 4),
+        "away_prob": round((1/away_raw) / t, 4),
+        "margin":    round(t - 1.0, 4),
+        "source":    "reference_model",
+    }
