@@ -31,6 +31,7 @@ async def run_pipeline():
     from ingestion.odds_service import get_odds_for_match, get_reference_odds
     from models.dixon_coles import compute_xg, run_simulation
     from decisions.verdict_engine import generate_verdicts, format_verdict_telegram
+    from storage.signals_repo import save_signal, save_no_bet, log_pipeline_run
 
     fixtures = fetch_upcoming(days_ahead=2)
     logger.info(f"{len(fixtures)} matchs a analyser")
@@ -39,10 +40,13 @@ async def run_pipeline():
         await send_telegram("APEX-EPL — Aucun match EPL trouve.")
         return
 
+    total_signals = 0
+
     for fix in fixtures:
-        home_name = fix["home_team"]
-        away_name = fix["away_team"]
-        kickoff   = fix["kickoff_utc"]
+        home_name  = fix["home_team"]
+        away_name  = fix["away_team"]
+        kickoff    = fix["kickoff_utc"]
+        fixture_id = fix["fixture_id"]
 
         logger.info(f"Analyse: {home_name} vs {away_name}")
 
@@ -81,31 +85,69 @@ async def run_pipeline():
         model    = run_simulation(xg_home, xg_away)
         verdicts = generate_verdicts(model, odds_1x2, odds_ou25, dcs)
 
+        # Sauvegarder dans SQLite
+        if verdicts:
+            for v in verdicts:
+                save_signal({
+                    "fixture_id":   fixture_id,
+                    "kickoff_utc":  kickoff,
+                    "home_team":    home_name,
+                    "away_team":    away_name,
+                    "market":       v["market"],
+                    "outcome":      v["market"],
+                    "model_prob":   v["model_prob"],
+                    "demargin_prob": v["demargin_prob"],
+                    "raw_odds":     v["raw_odds"],
+                    "edge":         v["edge"],
+                    "max_stake_pct": v["max_stake_pct"],
+                    "status":       v["status"],
+                    "dcs_score":    dcs,
+                    "xg_home":      xg_home,
+                    "xg_away":      xg_away,
+                    "odds_source":  odds_1x2.get("source", "reference"),
+                })
+            total_signals += len(verdicts)
+        else:
+            save_no_bet(fixture_id, home_name, away_name,
+                        kickoff, dcs, xg_home, xg_away)
+
+        # Message Telegram
         msg = format_verdict_telegram(
             home_name, away_name, kickoff, model, verdicts, dcs
         )
-
-        source_str   = odds_1x2.get("source", "reference")
+        source_str = odds_1x2.get("source", "reference")
         inj_h = f"{len(home_inj)} blesse(s)" if home_inj else "aucun"
         inj_a = f"{len(away_inj)} blesse(s)" if away_inj else "aucun"
-
         msg += (
             f"\nBlesses: {home_name} {inj_h} | {away_name} {inj_a}"
             f"\nSource cotes: {source_str}"
         )
-
         await send_telegram(msg)
 
-    logger.info("=== PIPELINE TERMINE ===")
+    log_pipeline_run(len(fixtures), total_signals)
+    logger.info(f"=== PIPELINE TERMINE === {total_signals} signaux sauvegardes")
+
+
+async def run_resolver():
+    logger.info("=== RESOLUTION SIGNAUX ===")
+    from storage.result_resolver import resolve_pending
+    stats = await resolve_pending()
+    if stats and stats["resolved"] > 0:
+        msg = (
+            "=== APEX-EPL BILAN ===\n"
+            f"Signaux resolus: {stats['resolved']}\n"
+            f"Victoires: {stats['wins']} | Defaites: {stats['losses']}\n"
+            f"Win rate: {stats['win_rate']:.1%}\n"
+            f"P&L cumule: {stats['pnl_pct']:+.1%}"
+        )
+        await send_telegram(msg)
 
 
 async def send_telegram(text):
     if not BOT_TOKEN or not CHANNEL_ID:
-        logger.warning("Telegram non configure")
         return
     try:
         bot = Bot(token=BOT_TOKEN)
-        # Envoyer en texte plain pour eviter les erreurs Markdown
         for i in range(0, len(text), 4000):
             await bot.send_message(
                 chat_id=CHANNEL_ID,
@@ -119,18 +161,25 @@ async def main():
     logger.info("=== APEX-OMEGA-EPL Bot starting ===")
     logger.info(f"Data directory: {DATA_DIR}")
 
+    # Init DB SQLite
+    from storage.signals_repo import init_db
+    init_db()
+
     await send_telegram(
         "APEX-OMEGA-EPL demarre\n"
         f"Date: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC\n"
-        "Dixon-Coles + Fallback cotes actifs"
+        "SQLite actif | Dixon-Coles | Fallback cotes"
     )
 
     await run_pipeline()
 
     scheduler = AsyncIOScheduler(timezone="UTC")
+    # Pipeline analyse : 08h, 14h, 20h UTC
     scheduler.add_job(run_pipeline, "cron", hour="8,14,20", minute=0)
+    # Resolution des resultats : 23h UTC
+    scheduler.add_job(run_resolver, "cron", hour=23, minute=0)
     scheduler.start()
-    logger.info("Scheduler actif — pipeline 08h/14h/20h UTC")
+    logger.info("Scheduler: pipeline 08h/14h/20h | resolver 23h")
 
     while True:
         await asyncio.sleep(3600)
