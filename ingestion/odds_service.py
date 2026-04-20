@@ -18,11 +18,7 @@ EPL_SEASON    = os.getenv("EPL_SEASON", "2025")
 API_HOST      = "v3.football.api-sports.io"
 
 # Double header : couvre plan RapidAPI ET plan direct api-sports.io
-HEADERS = {
-    "x-rapidapi-key":  API_KEY_AF,
-    "x-rapidapi-host": API_HOST,
-    "x-apisports-key": API_KEY_AF,
-}
+HEADERS = {"x-apisports-key": API_KEY_AF}
 
 BOOKMAKER_ID = 8   # Bet365
 
