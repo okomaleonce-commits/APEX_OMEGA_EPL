@@ -24,16 +24,19 @@ KELLY = {
     "btts_no":    0.167,
 }
 
+# Labels lisibles pour Telegram
+MARKET_LABELS = {
+    "1x2_home": "Victoire Domicile",
+    "1x2_draw": "Match Nul",
+    "1x2_away": "Victoire Exterieur",
+    "over25":   "Over 2.5 buts",
+    "under25":  "Under 2.5 buts",
+    "btts_yes": "Les deux equipes marquent (Oui)",
+    "btts_no":  "Les deux equipes marquent (Non)",
+}
+
 MAX_STAKE = 0.05
 DCS_GATE  = 70
-
-
-def _esc(text):
-    """Echappe les caracteres speciaux Markdown Telegram v1."""
-    for ch in ["_", "*", "[", "]", "(", ")", "~", "`", ">", "#",
-               "+", "-", "=", "|", "{", "}", ".", "!"]:
-        text = text.replace(ch, "\\" + ch)
-    return text
 
 
 def get_odds_category(odds):
@@ -69,6 +72,7 @@ def evaluate_market(market_key, model_prob, odds_data):
 
     return {
         "market":        market_key,
+        "label":         MARKET_LABELS.get(market_key, market_key),
         "model_prob":    round(model_prob, 4),
         "demargin_prob": round(dm_prob,    4),
         "raw_odds":      raw,
@@ -100,7 +104,7 @@ def generate_verdicts(model, odds_1x2, odds_ou25, dcs_score, moratoriums=None):
 
     if "over25" not in moratoriums:
         v = evaluate_market("over25", model["over25"], {
-            "raw":          odds_ou25.get("over_raw",  0),
+            "raw":           odds_ou25.get("over_raw",  0),
             "demargin_prob": odds_ou25.get("over_prob", 0),
         })
         if v: verdicts.append(v)
@@ -120,55 +124,64 @@ def generate_verdicts(model, odds_1x2, odds_ou25, dcs_score, moratoriums=None):
     return verdicts[:4]
 
 
-def format_verdict_telegram(home, away, kickoff, model, verdicts, dcs_score):
-    """
-    Formate le message Telegram sans Markdown complexe
-    pour eviter les erreurs de parsing.
-    """
+def format_verdict_telegram(home, away, kickoff, model, verdicts,
+                             dcs_score, n_inj_home=0, n_inj_away=0,
+                             odds_source="reference"):
     try:
         ko = kickoff[:16].replace("T", " ")
     except Exception:
         ko = str(kickoff)
 
-    source = ""
+    # Statut DCS
+    dcs_flag = "OK" if dcs_score >= DCS_GATE else "CONDITIONNEL"
 
     lines = [
-        "=== APEX-ENGINE EPL ===",
-        f"{home} vs {away}",
-        f"Heure: {ko} UTC",
-        f"DCS: {dcs_score:.0f}/100",
-        "",
-        "--- MODELE ---",
-        f"xG: {model['xg_home']:.2f} / {model['xg_away']:.2f}",
-        f"1X2: {model['home']:.1%} / {model['draw']:.1%} / {model['away']:.1%}",
-        f"O2.5: {model['over25']:.1%} | BTTS: {model['btts_yes']:.1%}",
-        f"Score probable: {model['modal_score'][0]}-{model['modal_score'][1]}",
-        "",
+        "=" * 35,
+        "  APEX-ENGINE EPL",
+        "=" * 35,
+        f"Match  : {home} vs {away}",
+        f"Heure  : {ko} UTC",
+        f"DCS    : {dcs_score:.0f}/100 [{dcs_flag}]",
+        "-" * 35,
+        "MODELE DIXON-COLES",
+        f"xG     : {home[:12]} {model['xg_home']:.2f}",
+        f"xG     : {away[:12]} {model['xg_away']:.2f}",
+        f"1X2    : {model['home']:.1%} / {model['draw']:.1%} / {model['away']:.1%}",
+        f"Over2.5: {model['over25']:.1%}  |  BTTS: {model['btts_yes']:.1%}",
+        f"Score  : {model['modal_score'][0]}-{model['modal_score'][1]} (probable)",
+        "-" * 35,
     ]
 
     if not verdicts:
-        lines.append("DECISION: NO BET")
+        lines.append("DECISION : NO BET")
         lines.append("Edge insuffisant ou DCS trop bas")
     else:
-        lines.append("--- SIGNAUX ---")
-        status_icon = {
-            "VALIDE":       "[OK]",
-            "CONDITIONNEL": "[COND]",
-        }
+        lines.append("SIGNAUX DETECTES")
         for v in verdicts:
-            icon = status_icon.get(v["status"], "[?]")
-            market_label = v["market"].upper().replace("_", " ")
+            icon = "[OK]" if v["status"] == "VALIDE" else "[COND]"
             lines.append(
-                f"{icon} {market_label} @ {v['raw_odds']:.2f}"
-                f" | Edge: +{v['edge']:.1%}"
-                f" | Mise: {v['max_stake_pct']:.0%}"
+                f"{icon} {v['label']}"
             )
+            lines.append(
+                f"      Cote {v['raw_odds']:.2f} | "
+                f"Edge +{v['edge']:.1%} | "
+                f"Mise {v['max_stake_pct']:.0%} bankroll"
+            )
+
+    lines.append("-" * 35)
+
+    # Blessés — seulement si nombre raisonnable
+    inj_h_str = f"{n_inj_home}" if n_inj_home > 0 else "aucun connu"
+    inj_a_str = f"{n_inj_away}" if n_inj_away > 0 else "aucun connu"
+    lines.append(f"Blesses: {home[:14]} {inj_h_str}")
+    lines.append(f"Blesses: {away[:14]} {inj_a_str}")
+    lines.append(f"Source cotes: {odds_source}")
 
     if dcs_score < DCS_GATE:
         lines.append("")
-        lines.append(f"[!] DCS {dcs_score:.0f} < 70 — verifier compos H-2")
+        lines.append("[!] DCS bas — verifier compos H-2 avant de parier")
 
-    lines.append("")
-    lines.append("APEX-ENGINE v1.3")
+    lines.append("=" * 35)
+    lines.append("APEX-ENGINE v1.3 | EPL 2025/26")
 
     return "\n".join(lines)

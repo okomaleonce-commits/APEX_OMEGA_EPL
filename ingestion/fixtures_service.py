@@ -24,11 +24,11 @@ EPL_SEASON    = int(os.getenv("EPL_SEASON", "2025"))
 CACHE_TTL_H   = 6
 
 
-def _cache_path(name: str) -> Path:
+def _cache_path(name):
     return CACHE_DIR / f"{name}.json"
 
 
-def _is_fresh(path: Path, ttl_hours: int = CACHE_TTL_H) -> bool:
+def _is_fresh(path, ttl_hours=CACHE_TTL_H):
     if not path.exists():
         return False
     age = datetime.now(timezone.utc) - datetime.fromtimestamp(
@@ -37,24 +37,19 @@ def _is_fresh(path: Path, ttl_hours: int = CACHE_TTL_H) -> bool:
     return age < timedelta(hours=ttl_hours)
 
 
-def _load(path: Path) -> list:
+def _load(path):
     with open(path) as f:
         return json.load(f)
 
 
-def _save(path: Path, data) -> None:
+def _save(path, data):
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
 
 
-# ── Fixtures à venir ──────────────────────────────────────────────
-
-def fetch_upcoming(days_ahead: int = 3) -> list[dict]:
-    """Retourne les fixtures EPL des prochains jours."""
+def fetch_upcoming(days_ahead=3):
     cache = _cache_path("fixtures_upcoming")
-
     if _is_fresh(cache):
-        logger.debug("Fixtures depuis cache")
         return _load(cache)
 
     today = datetime.now(timezone.utc).date()
@@ -77,43 +72,36 @@ def fetch_upcoming(days_ahead: int = 3) -> list[dict]:
         raw      = resp.json().get("response", [])
         fixtures = [_parse(f) for f in raw]
         _save(cache, fixtures)
-        logger.info(f"{len(fixtures)} fixtures EPL récupérés")
+        logger.info(f"{len(fixtures)} fixtures EPL recuperes")
         return fixtures
-
     except Exception as e:
         logger.error(f"Erreur fetch fixtures: {e}")
         return _load(cache) if cache.exists() else []
 
 
-def _parse(raw: dict) -> dict:
+def _parse(raw):
     fix   = raw["fixture"]
     home  = raw["teams"]["home"]
     away  = raw["teams"]["away"]
     venue = fix.get("venue", {})
-
     return {
-        "fixture_id":       fix["id"],
-        "kickoff_utc":      fix["date"],
-        "round":            raw["league"].get("round", ""),
-        "home_team":        home["name"],
-        "home_team_id":     home["id"],
-        "away_team":        away["name"],
-        "away_team_id":     away["id"],
-        "venue_name":       venue.get("name", ""),
-        "venue_capacity":   venue.get("capacity", 0),
-        "status":           fix["status"]["short"],
+        "fixture_id":     fix["id"],
+        "kickoff_utc":    fix["date"],
+        "round":          raw["league"].get("round", ""),
+        "home_team":      home["name"],
+        "home_team_id":   home["id"],
+        "away_team":      away["name"],
+        "away_team_id":   away["id"],
+        "venue_name":     venue.get("name", ""),
+        "venue_capacity": venue.get("capacity", 0),
+        "status":         fix["status"]["short"],
     }
 
 
-# ── H2H ───────────────────────────────────────────────────────────
-
-def fetch_h2h(home_id: int, away_id: int, n: int = 10) -> list[dict]:
-    """Récupère les n derniers H2H entre deux équipes."""
+def fetch_h2h(home_id, away_id, n=10):
     cache = _cache_path(f"h2h_{home_id}_{away_id}")
-
     if _is_fresh(cache, ttl_hours=48):
         return _load(cache)
-
     try:
         resp = requests.get(
             f"{BASE_URL}/fixtures/headtohead",
@@ -138,21 +126,15 @@ def fetch_h2h(home_id: int, away_id: int, n: int = 10) -> list[dict]:
             })
         _save(cache, results)
         return results
-
     except Exception as e:
         logger.error(f"Erreur H2H: {e}")
         return _load(cache) if cache.exists() else []
 
 
-# ── Stats équipe ──────────────────────────────────────────────────
-
-def fetch_team_stats(team_id: int) -> dict:
-    """Statistiques de la saison pour une équipe."""
+def fetch_team_stats(team_id):
     cache = _cache_path(f"stats_{team_id}")
-
     if _is_fresh(cache, ttl_hours=12):
         return _load(cache)
-
     try:
         resp = requests.get(
             f"{BASE_URL}/teams/statistics",
@@ -165,73 +147,83 @@ def fetch_team_stats(team_id: int) -> dict:
             timeout=10,
         )
         resp.raise_for_status()
-        data = resp.json().get("response", {})
+        data  = resp.json().get("response", {})
         stats = _parse_stats(data)
         _save(cache, stats)
         return stats
-
     except Exception as e:
-        logger.error(f"Erreur stats équipe {team_id}: {e}")
+        logger.error(f"Erreur stats equipe {team_id}: {e}")
         return _load(cache) if cache.exists() else {}
 
 
-def _parse_stats(data: dict) -> dict:
+def _parse_stats(data):
     if not data:
         return {}
-
-    goals   = data.get("goals", {})
-    played  = data.get("fixtures", {}).get("played", {})
-    total   = played.get("total", 1) or 1
-
-    gf_total = goals.get("for",     {}).get("total", {}).get("total", 0) or 0
-    ga_total = goals.get("against", {}).get("total", {}).get("total", 0) or 0
-
-    form_str = data.get("form", "") or ""
-
+    goals  = data.get("goals", {})
+    played = data.get("fixtures", {}).get("played", {})
+    total  = played.get("total", 1) or 1
+    gf     = goals.get("for",     {}).get("total", {}).get("total", 0) or 0
+    ga     = goals.get("against", {}).get("total", {}).get("total", 0) or 0
+    form_s = data.get("form", "") or ""
     return {
         "team_name":          data.get("team", {}).get("name", ""),
         "team_id":            data.get("team", {}).get("id", 0),
         "matches_played":     total,
-        "goals_scored_avg":   round(gf_total / total, 3),
-        "goals_conceded_avg": round(ga_total / total, 3),
-        "form_string":        form_str,
-        "form_5":             list(form_str[-5:]) if form_str else [],
-        "wins":    data.get("fixtures", {}).get("wins",   {}).get("total", 0),
-        "draws":   data.get("fixtures", {}).get("draws",  {}).get("total", 0),
-        "losses":  data.get("fixtures", {}).get("losses", {}).get("total", 0),
+        "goals_scored_avg":   round(gf / total, 3),
+        "goals_conceded_avg": round(ga / total, 3),
+        "form_string":        form_s,
+        "form_5":             list(form_s[-5:]) if form_s else [],
+        "wins":   data.get("fixtures", {}).get("wins",   {}).get("total", 0),
+        "draws":  data.get("fixtures", {}).get("draws",  {}).get("total", 0),
+        "losses": data.get("fixtures", {}).get("losses", {}).get("total", 0),
     }
 
 
-# ── Blessés / Suspendus ───────────────────────────────────────────
+def fetch_injuries(team_id, fixture_id=None):
+    """
+    Recupere les blessures ACTUELLES d'une equipe.
+    Filtre par fixture si disponible, sinon retourne max 10 joueurs.
+    """
+    cache_key = f"injuries_{team_id}"
+    if fixture_id:
+        cache_key = f"injuries_{team_id}_{fixture_id}"
 
-def fetch_injuries(team_id: int) -> list[dict]:
-    """Liste des blessés et suspendus."""
-    cache = _cache_path(f"injuries_{team_id}")
-
+    cache = _cache_path(cache_key)
     if _is_fresh(cache, ttl_hours=6):
         return _load(cache)
 
     try:
+        params = {
+            "league": EPL_LEAGUE_ID,
+            "season": EPL_SEASON,
+            "team":   team_id,
+        }
+        # Si on a le fixture_id, filtrer par match (blessures du match specifique)
+        if fixture_id:
+            params["fixture"] = fixture_id
+
         resp = requests.get(
             f"{BASE_URL}/injuries",
             headers=HEADERS,
-            params={
-                "league": EPL_LEAGUE_ID,
-                "season": EPL_SEASON,
-                "team":   team_id,
-            },
+            params=params,
             timeout=10,
         )
         resp.raise_for_status()
+        raw_players = resp.json().get("response", [])
+
         players = []
-        for item in resp.json().get("response", []):
+        for item in raw_players:
             p = item.get("player", {})
             players.append({
-                "name":         p.get("name", ""),
-                "position":     p.get("position", ""),
-                "injury_type":  item.get("type", ""),
-                "reason":       item.get("reason", ""),
+                "name":        p.get("name", ""),
+                "position":    p.get("position", ""),
+                "injury_type": item.get("type", ""),
+                "reason":      item.get("reason", ""),
             })
+
+        # Limiter a 15 blessures max (eviter les retours de 100+ joueurs)
+        players = players[:15]
+
         _save(cache, players)
         return players
 

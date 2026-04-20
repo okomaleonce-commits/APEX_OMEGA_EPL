@@ -37,7 +37,7 @@ async def run_pipeline():
     logger.info(f"{len(fixtures)} matchs a analyser")
 
     if not fixtures:
-        await send_telegram("APEX-EPL — Aucun match EPL trouve.")
+        await send_telegram("APEX-EPL -- Aucun match EPL trouve.")
         return
 
     total_signals = 0
@@ -52,10 +52,13 @@ async def run_pipeline():
 
         home_stats = fetch_team_stats(fix["home_team_id"])
         away_stats = fetch_team_stats(fix["away_team_id"])
-        home_inj   = fetch_injuries(fix["home_team_id"])
-        away_inj   = fetch_injuries(fix["away_team_id"])
-        h2h        = fetch_h2h(fix["home_team_id"], fix["away_team_id"])
-        odds_data  = get_odds_for_match(home_name, away_name)
+
+        # Blessures filtrees par fixture pour eviter les 100+ retours
+        home_inj = fetch_injuries(fix["home_team_id"], fixture_id)
+        away_inj = fetch_injuries(fix["away_team_id"], fixture_id)
+
+        h2h       = fetch_h2h(fix["home_team_id"], fix["away_team_id"])
+        odds_data = get_odds_for_match(home_name, away_name)
 
         odds_1x2  = odds_data.get("odds_1x2",  {})
         odds_ou25 = odds_data.get("odds_ou25", {})
@@ -65,16 +68,21 @@ async def run_pipeline():
                 home_name, away_name, home_stats, away_stats
             )
 
-        ais_home = max(-0.25, -0.05 * min(len(home_inj), 5))
-        ais_away = max(-0.25, -0.05 * min(len(away_inj), 5))
+        n_inj_home = len(home_inj)
+        n_inj_away = len(away_inj)
 
+        # AIS-F : -5% par blesse cle (max -25%)
+        ais_home = max(-0.25, -0.05 * min(n_inj_home, 5))
+        ais_away = max(-0.25, -0.05 * min(n_inj_away, 5))
+
+        # DCS
         dcs = 55
         if home_stats.get("matches_played", 0) > 0: dcs += 10
         if away_stats.get("matches_played", 0) > 0: dcs += 10
         if odds_1x2.get("source") == "api_football": dcs += 15
         else:                                         dcs += 5
         if h2h:                                       dcs += 5
-        if home_inj or away_inj:                      dcs += 5
+        if n_inj_home > 0 or n_inj_away > 0:         dcs += 5
 
         xg_home, xg_away = compute_xg(
             home_stats, away_stats,
@@ -89,22 +97,22 @@ async def run_pipeline():
         if verdicts:
             for v in verdicts:
                 save_signal({
-                    "fixture_id":   fixture_id,
-                    "kickoff_utc":  kickoff,
-                    "home_team":    home_name,
-                    "away_team":    away_name,
-                    "market":       v["market"],
-                    "outcome":      v["market"],
-                    "model_prob":   v["model_prob"],
+                    "fixture_id":    fixture_id,
+                    "kickoff_utc":   kickoff,
+                    "home_team":     home_name,
+                    "away_team":     away_name,
+                    "market":        v["market"],
+                    "outcome":       v["label"],
+                    "model_prob":    v["model_prob"],
                     "demargin_prob": v["demargin_prob"],
-                    "raw_odds":     v["raw_odds"],
-                    "edge":         v["edge"],
+                    "raw_odds":      v["raw_odds"],
+                    "edge":          v["edge"],
                     "max_stake_pct": v["max_stake_pct"],
-                    "status":       v["status"],
-                    "dcs_score":    dcs,
-                    "xg_home":      xg_home,
-                    "xg_away":      xg_away,
-                    "odds_source":  odds_1x2.get("source", "reference"),
+                    "status":        v["status"],
+                    "dcs_score":     dcs,
+                    "xg_home":       xg_home,
+                    "xg_away":       xg_away,
+                    "odds_source":   odds_1x2.get("source", "reference"),
                 })
             total_signals += len(verdicts)
         else:
@@ -113,14 +121,10 @@ async def run_pipeline():
 
         # Message Telegram
         msg = format_verdict_telegram(
-            home_name, away_name, kickoff, model, verdicts, dcs
-        )
-        source_str = odds_1x2.get("source", "reference")
-        inj_h = f"{len(home_inj)} blesse(s)" if home_inj else "aucun"
-        inj_a = f"{len(away_inj)} blesse(s)" if away_inj else "aucun"
-        msg += (
-            f"\nBlesses: {home_name} {inj_h} | {away_name} {inj_a}"
-            f"\nSource cotes: {source_str}"
+            home_name, away_name, kickoff, model, verdicts, dcs,
+            n_inj_home=n_inj_home,
+            n_inj_away=n_inj_away,
+            odds_source=odds_1x2.get("source", "reference"),
         )
         await send_telegram(msg)
 
@@ -132,7 +136,7 @@ async def run_resolver():
     logger.info("=== RESOLUTION SIGNAUX ===")
     from storage.result_resolver import resolve_pending
     stats = await resolve_pending()
-    if stats and stats["resolved"] > 0:
+    if stats and stats.get("resolved", 0) > 0:
         msg = (
             "=== APEX-EPL BILAN ===\n"
             f"Signaux resolus: {stats['resolved']}\n"
@@ -161,22 +165,19 @@ async def main():
     logger.info("=== APEX-OMEGA-EPL Bot starting ===")
     logger.info(f"Data directory: {DATA_DIR}")
 
-    # Init DB SQLite
     from storage.signals_repo import init_db
     init_db()
 
     await send_telegram(
         "APEX-OMEGA-EPL demarre\n"
         f"Date: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC\n"
-        "SQLite actif | Dixon-Coles | Fallback cotes"
+        "SQLite | Dixon-Coles | Labels corriges"
     )
 
     await run_pipeline()
 
     scheduler = AsyncIOScheduler(timezone="UTC")
-    # Pipeline analyse : 08h, 14h, 20h UTC
     scheduler.add_job(run_pipeline, "cron", hour="8,14,20", minute=0)
-    # Resolution des resultats : 23h UTC
     scheduler.add_job(run_resolver, "cron", hour=23, minute=0)
     scheduler.start()
     logger.info("Scheduler: pipeline 08h/14h/20h | resolver 23h")
