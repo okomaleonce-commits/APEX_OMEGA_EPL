@@ -7,30 +7,23 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-API_KEY_AF = os.getenv("FOOTBALL_DATA_API_KEY", "")
-DATA_DIR   = Path(os.getenv("RENDER_DISK_PATH", "./data"))
-CACHE_DIR  = DATA_DIR / "cache"
+API_KEY_AF    = os.getenv("FOOTBALL_DATA_API_KEY", "")
+DATA_DIR      = Path(os.getenv("RENDER_DISK_PATH", "./data"))
+CACHE_DIR     = DATA_DIR / "cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 EPL_LEAGUE_ID = os.getenv("EPL_LEAGUE_ID", "39")
 EPL_SEASON    = os.getenv("EPL_SEASON", "2025")
-
-API_HOST = "v3.football.api-sports.io"
-HEADERS  = {
-    "x-rapidapi-key":  API_KEY_AF,
-    "x-rapidapi-host": API_HOST,
-}
-
-# Bookmaker IDs API-Football
-# 8 = Bet365 | 1 = Bwin | 6 = Betway
-BOOKMAKER_ID = 8
+API_HOST      = "v3.football.api-sports.io"
+HEADERS       = {"x-rapidapi-key": API_KEY_AF, "x-rapidapi-host": API_HOST}
+BOOKMAKER_ID  = 8
 
 
-def _cache_path(name: str) -> Path:
+def _cache_path(name):
     return CACHE_DIR / f"odds_{name}.json"
 
 
-def _is_fresh(path: Path, ttl_hours: float = 3) -> bool:
+def _is_fresh(path, ttl_hours=3):
     if not path.exists():
         return False
     age = datetime.now(timezone.utc) - datetime.fromtimestamp(
@@ -39,19 +32,14 @@ def _is_fresh(path: Path, ttl_hours: float = 3) -> bool:
     return age < timedelta(hours=ttl_hours)
 
 
-def fetch_all_epl_odds() -> list[dict]:
-    """Récupère les cotes EPL via API-Football."""
+def fetch_all_epl_odds():
     cache = _cache_path("all_epl")
-
     if _is_fresh(cache):
-        logger.debug("Cotes depuis cache")
         with open(cache) as f:
             return json.load(f)
-
     if not API_KEY_AF:
-        logger.warning("FOOTBALL_DATA_API_KEY non configurée")
+        logger.warning("FOOTBALL_DATA_API_KEY non configuree")
         return []
-
     try:
         resp = requests.get(
             f"https://{API_HOST}/odds",
@@ -65,20 +53,15 @@ def fetch_all_epl_odds() -> list[dict]:
             timeout=10,
         )
         resp.raise_for_status()
-        raw_list = resp.json().get("response", [])
-
         results = []
-        for item in raw_list:
+        for item in resp.json().get("response", []):
             parsed = _parse_odds_item(item)
             if parsed:
                 results.append(parsed)
-
         with open(cache, "w") as f:
             json.dump(results, f, indent=2)
-
         logger.info(f"{len(results)} matchs avec cotes (API-Football)")
         return results
-
     except Exception as e:
         logger.error(f"Erreur cotes API-Football: {e}")
         if cache.exists():
@@ -87,47 +70,44 @@ def fetch_all_epl_odds() -> list[dict]:
         return []
 
 
-def _parse_odds_item(item: dict) -> dict | None:
-    """Parse un item de cotes API-Football."""
+def _parse_odds_item(item):
     fix   = item.get("fixture", {})
     teams = item.get("teams", {})
     home  = teams.get("home", {}).get("name", "")
     away  = teams.get("away", {}).get("name", "")
-
     if not home or not away:
         return None
 
-    odds_1x2 = {}
+    odds_1x2  = {}
     odds_ou25 = {}
 
     for bm in item.get("bookmakers", []):
         for bet in bm.get("bets", []):
             name = bet.get("name", "")
-
-            # 1X2
             if name == "Match Winner":
                 for v in bet.get("values", []):
-                    val  = v.get("value", "")
-                    odd  = _safe_float(v.get("odd", 0))
-                    if val == "Home": odds_1x2["home_raw"] = odd
-                    elif val == "Draw": odds_1x2["draw_raw"] = odd
-                    elif val == "Away": odds_1x2["away_raw"] = odd
-
-            # Over/Under 2.5
+                    val = v.get("value", "")
+                    odd = _safe_float(v.get("odd", 0))
+                    if val == "Home":
+                        odds_1x2["home_raw"] = odd
+                    elif val == "Draw":
+                        odds_1x2["draw_raw"] = odd
+                    elif val == "Away":
+                        odds_1x2["away_raw"] = odd
             elif name == "Goals Over/Under":
                 for v in bet.get("values", []):
                     val = v.get("value", "")
                     odd = _safe_float(v.get("odd", 0))
-                    if val == "Over 2.5":  odds_ou25["over_raw"]  = odd
-                    if val == "Under 2.5": odds_ou25["under_raw"] = odd
+                    if val == "Over 2.5":
+                        odds_ou25["over_raw"] = odd
+                    elif val == "Under 2.5":
+                        odds_ou25["under_raw"] = odd
 
-    # Démarginiser 1X2
     if len(odds_1x2) == 3:
         odds_1x2 = _demarginize_1x2(odds_1x2)
     else:
         odds_1x2 = {}
 
-    # Démarginiser Over/Under
     if len(odds_ou25) == 2:
         odds_ou25 = _demarginize_ou(odds_ou25)
     else:
@@ -138,4 +118,64 @@ def _parse_odds_item(item: dict) -> dict | None:
         "away_team":   away,
         "kickoff_utc": fix.get("date", ""),
         "fixture_id":  fix.get("id", 0),
-        "odds_
+        "odds_1x2":    odds_1x2,
+        "odds_ou25":   odds_ou25,
+        "bookmaker":   "bet365",
+    }
+
+
+def get_odds_for_match(home_team, away_team):
+    all_odds   = fetch_all_epl_odds()
+    home_lower = home_team.lower()
+    away_lower = away_team.lower()
+    for game in all_odds:
+        h = game.get("home_team", "").lower()
+        a = game.get("away_team", "").lower()
+        if _name_match(home_lower, h) and _name_match(away_lower, a):
+            return game
+    logger.warning(f"Cotes non trouvees: {home_team} vs {away_team}")
+    return {}
+
+
+def _name_match(a, b):
+    return bool(set(a.split()) & set(b.split())) or a in b or b in a
+
+
+def _safe_float(val):
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _demarginize_1x2(odds):
+    h = odds["home_raw"]
+    d = odds["draw_raw"]
+    a = odds["away_raw"]
+    if not all([h, d, a]):
+        return odds
+    total = (1/h) + (1/d) + (1/a)
+    return {
+        "home_raw":  round(h, 3),
+        "draw_raw":  round(d, 3),
+        "away_raw":  round(a, 3),
+        "home_prob": round((1/h) / total, 4),
+        "draw_prob": round((1/d) / total, 4),
+        "away_prob": round((1/a) / total, 4),
+        "margin":    round(total - 1.0, 4),
+    }
+
+
+def _demarginize_ou(ou):
+    over  = ou.get("over_raw",  0)
+    under = ou.get("under_raw", 0)
+    if not over or not under:
+        return ou
+    total = (1/over) + (1/under)
+    return {
+        "over_raw":   round(over,  3),
+        "under_raw":  round(under, 3),
+        "over_prob":  round((1/over)  / total, 4),
+        "under_prob": round((1/under) / total, 4),
+        "margin":     round(total - 1.0, 4),
+    }
