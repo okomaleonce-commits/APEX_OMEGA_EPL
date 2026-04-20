@@ -16,8 +16,15 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 EPL_LEAGUE_ID = os.getenv("EPL_LEAGUE_ID", "39")
 EPL_SEASON    = os.getenv("EPL_SEASON", "2025")
 API_HOST      = "v3.football.api-sports.io"
-HEADERS       = {"x-rapidapi-key": API_KEY_AF, "x-rapidapi-host": API_HOST}
-BOOKMAKER_ID  = 8
+
+# Double header : couvre plan RapidAPI ET plan direct api-sports.io
+HEADERS = {
+    "x-rapidapi-key":  API_KEY_AF,
+    "x-rapidapi-host": API_HOST,
+    "x-apisports-key": API_KEY_AF,
+}
+
+BOOKMAKER_ID = 8   # Bet365
 
 
 def _cache_path(name):
@@ -54,15 +61,23 @@ def fetch_all_epl_odds():
             timeout=10,
         )
         resp.raise_for_status()
+        data   = resp.json()
+        errors = data.get("errors", {})
+        if errors:
+            logger.error(f"API odds auth error: {errors}")
+            return []
+
         results = []
-        for item in resp.json().get("response", []):
+        for item in data.get("response", []):
             parsed = _parse_odds_item(item)
             if parsed:
                 results.append(parsed)
+
         with open(cache, "w") as f:
             json.dump(results, f, indent=2)
         logger.info(f"{len(results)} matchs avec cotes (API-Football)")
         return results
+
     except Exception as e:
         logger.error(f"Erreur cotes API-Football: {e}")
         if cache.exists():
@@ -89,20 +104,15 @@ def _parse_odds_item(item):
                 for v in bet.get("values", []):
                     val = v.get("value", "")
                     odd = _safe_float(v.get("odd", 0))
-                    if val == "Home":
-                        odds_1x2["home_raw"] = odd
-                    elif val == "Draw":
-                        odds_1x2["draw_raw"] = odd
-                    elif val == "Away":
-                        odds_1x2["away_raw"] = odd
+                    if val == "Home":      odds_1x2["home_raw"] = odd
+                    elif val == "Draw":    odds_1x2["draw_raw"] = odd
+                    elif val == "Away":    odds_1x2["away_raw"] = odd
             elif name == "Goals Over/Under":
                 for v in bet.get("values", []):
                     val = v.get("value", "")
                     odd = _safe_float(v.get("odd", 0))
-                    if val == "Over 2.5":
-                        odds_ou25["over_raw"] = odd
-                    elif val == "Under 2.5":
-                        odds_ou25["under_raw"] = odd
+                    if val == "Over 2.5":  odds_ou25["over_raw"]  = odd
+                    elif val == "Under 2.5": odds_ou25["under_raw"] = odd
 
     if len(odds_1x2) == 3:
         odds_1x2 = _demarginize_1x2(odds_1x2)
@@ -139,7 +149,7 @@ def get_odds_for_match(home_team, away_team):
 
 
 def get_reference_odds(home_team, away_team, home_stats, away_stats):
-    avg = 1.445
+    avg  = 1.445
     gf_h = home_stats.get("goals_scored_avg",  avg)
     ga_h = home_stats.get("goals_conceded_avg", avg)
     gf_a = away_stats.get("goals_scored_avg",  avg)
@@ -149,9 +159,9 @@ def get_reference_odds(home_team, away_team, home_stats, away_stats):
     xg_a = max((gf_a / avg) * (ga_h / avg) * avg, 0.2)
 
     hw, dr, aw = _poisson_1x2(xg_h, xg_a)
-    total = hw + dr + aw
-
+    total  = hw + dr + aw
     margin = 0.05
+
     hw_m = hw / total
     dr_m = dr / total
     aw_m = aw / total
@@ -198,12 +208,9 @@ def _poisson_1x2(mu_h, mu_a, max_g=8):
         for a in range(max_g):
             p = (math.exp(-mu_h) * mu_h ** h / math.factorial(h) *
                  math.exp(-mu_a) * mu_a ** a / math.factorial(a))
-            if h > a:
-                hw += p
-            elif h == a:
-                dr += p
-            else:
-                aw += p
+            if h > a:   hw += p
+            elif h == a: dr += p
+            else:        aw += p
     return hw, dr, aw
 
 

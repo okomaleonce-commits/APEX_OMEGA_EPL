@@ -14,9 +14,15 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 API_HOST = "v3.football.api-sports.io"
 BASE_URL = f"https://{API_HOST}"
-HEADERS  = {
+
+# API-Football accepte deux types de headers selon le plan :
+# - Plan RapidAPI   : x-rapidapi-key + x-rapidapi-host
+# - Plan direct     : x-apisports-key uniquement
+# On envoie les deux pour couvrir les deux cas.
+HEADERS = {
     "x-rapidapi-key":  API_KEY,
     "x-rapidapi-host": API_HOST,
+    "x-apisports-key": API_KEY,
 }
 
 EPL_LEAGUE_ID = int(os.getenv("EPL_LEAGUE_ID", "39"))
@@ -69,11 +75,20 @@ def fetch_upcoming(days_ahead=3):
             timeout=10,
         )
         resp.raise_for_status()
-        raw      = resp.json().get("response", [])
+        data = resp.json()
+
+        # Detecter erreur d'authentification
+        errors = data.get("errors", {})
+        if errors:
+            logger.error(f"API-Football auth error: {errors}")
+            return _load(cache) if cache.exists() else []
+
+        raw      = data.get("response", [])
         fixtures = [_parse(f) for f in raw]
         _save(cache, fixtures)
         logger.info(f"{len(fixtures)} fixtures EPL recuperes")
         return fixtures
+
     except Exception as e:
         logger.error(f"Erreur fetch fixtures: {e}")
         return _load(cache) if cache.exists() else []
@@ -147,8 +162,12 @@ def fetch_team_stats(team_id):
             timeout=10,
         )
         resp.raise_for_status()
-        data  = resp.json().get("response", {})
-        stats = _parse_stats(data)
+        data  = resp.json()
+        errors = data.get("errors", {})
+        if errors:
+            logger.error(f"API stats error: {errors}")
+            return _load(cache) if cache.exists() else {}
+        stats = _parse_stats(data.get("response", {}))
         _save(cache, stats)
         return stats
     except Exception as e:
@@ -180,25 +199,18 @@ def _parse_stats(data):
 
 
 def fetch_injuries(team_id, fixture_id=None):
-    """
-    Recupere les blessures ACTUELLES d'une equipe.
-    Filtre par fixture si disponible, sinon retourne max 10 joueurs.
-    """
     cache_key = f"injuries_{team_id}"
     if fixture_id:
         cache_key = f"injuries_{team_id}_{fixture_id}"
-
     cache = _cache_path(cache_key)
     if _is_fresh(cache, ttl_hours=6):
         return _load(cache)
-
     try:
         params = {
             "league": EPL_LEAGUE_ID,
             "season": EPL_SEASON,
             "team":   team_id,
         }
-        # Si on a le fixture_id, filtrer par match (blessures du match specifique)
         if fixture_id:
             params["fixture"] = fixture_id
 
@@ -209,10 +221,14 @@ def fetch_injuries(team_id, fixture_id=None):
             timeout=10,
         )
         resp.raise_for_status()
-        raw_players = resp.json().get("response", [])
+        data   = resp.json()
+        errors = data.get("errors", {})
+        if errors:
+            logger.warning(f"API injuries error: {errors}")
+            return []
 
         players = []
-        for item in raw_players:
+        for item in data.get("response", []):
             p = item.get("player", {})
             players.append({
                 "name":        p.get("name", ""),
@@ -221,9 +237,7 @@ def fetch_injuries(team_id, fixture_id=None):
                 "reason":      item.get("reason", ""),
             })
 
-        # Limiter a 15 blessures max (eviter les retours de 100+ joueurs)
         players = players[:15]
-
         _save(cache, players)
         return players
 
