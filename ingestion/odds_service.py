@@ -34,49 +34,77 @@ def _is_fresh(path: Path, ttl_hours: float = 2) -> bool:
 
 
 def fetch_all_epl_odds() -> list[dict]:
-    """
-    Récupère toutes les cotes EPL disponibles.
-    Retourne une liste de matchs avec cotes 1X2.
-    """
+    """Récupère les cotes via API-Football (fallback gratuit)."""
     cache = _cache_path("all_epl")
 
     if _is_fresh(cache):
-        logger.debug("Cotes depuis cache")
         with open(cache) as f:
             return json.load(f)
 
+    API_KEY_AF = os.getenv("FOOTBALL_DATA_API_KEY", "")
+    if not API_KEY_AF:
+        return []
+
     try:
         resp = requests.get(
-            f"{BASE_URL}/sports/{SPORT}/odds",
+            "https://v3.football.api-sports.io/odds",
+            headers={
+                "x-rapidapi-key":  API_KEY_AF,
+                "x-rapidapi-host": "v3.football.api-sports.io",
+            },
             params={
-                "apiKey":      ODDS_API_KEY,
-                "regions":     "eu",
-                "markets":     "h2h,totals",
-                "bookmakers":  ODDS_API_BOOKMAKERS,
-                "oddsFormat":  "decimal",
+                "league":     os.getenv("EPL_LEAGUE_ID", "39"),
+                "season":     os.getenv("EPL_SEASON", "2025"),
+                "bookmaker":  8,   # Bet365 (ID API-Football)
+                "next":       10,
             },
             timeout=10,
         )
         resp.raise_for_status()
-        games = resp.json()
-
         results = []
-        for g in games:
-            parsed = _parse_game(g)
-            if parsed:
-                results.append(parsed)
+        for item in resp.json().get("response", []):
+            fix   = item.get("fixture", {})
+            teams = item.get("teams",   {})
+            home  = teams.get("home", {}).get("name", "")
+            away  = teams.get("away", {}).get("name", "")
+
+            odds_1x2 = {}
+            for bm in item.get("bookmakers", []):
+                for bet in bm.get("bets", []):
+                    if bet.get("name") == "Match Winner":
+                        for v in bet.get("values", []):
+                            if v["value"] == "Home":
+                                odds_1x2["home_raw"] = float(v["odd"])
+                            elif v["value"] == "Draw":
+                                odds_1x2["draw_raw"] = float(v["odd"])
+                            elif v["value"] == "Away":
+                                odds_1x2["away_raw"] = float(v["odd"])
+
+            if len(odds_1x2) == 3:
+                total = sum(1/v for v in odds_1x2.values())
+                odds_1x2.update({
+                    "home_prob":  round((1/odds_1x2["home_raw"]) / total, 4),
+                    "draw_prob":  round((1/odds_1x2["draw_raw"]) / total, 4),
+                    "away_prob":  round((1/odds_1x2["away_raw"]) / total, 4),
+                    "margin":     round(total - 1.0, 4),
+                })
+
+            results.append({
+                "home_team":   home,
+                "away_team":   away,
+                "kickoff_utc": fix.get("date", ""),
+                "odds_1x2":    odds_1x2,
+                "bookmaker":   "bet365",
+            })
 
         with open(cache, "w") as f:
             json.dump(results, f, indent=2)
 
-        logger.info(f"{len(results)} matchs EPL avec cotes récupérés")
+        logger.info(f"{len(results)} matchs avec cotes API-Football")
         return results
 
     except Exception as e:
-        logger.error(f"Erreur fetch cotes: {e}")
-        if cache.exists():
-            with open(cache) as f:
-                return json.load(f)
+        logger.error(f"Erreur cotes API-Football: {e}")
         return []
 
 
