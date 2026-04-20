@@ -28,11 +28,9 @@ async def run_pipeline():
     from ingestion.fixtures_service import (
         fetch_upcoming, fetch_team_stats, fetch_injuries, fetch_h2h
     )
-    from ingestion.odds_service import get_odds_for_match
+    from ingestion.odds_service import get_odds_for_match, get_reference_odds
     from models.dixon_coles import compute_xg, run_simulation
-    from decisions.verdict_engine import (
-        generate_verdicts, format_verdict_telegram
-    )
+    from decisions.verdict_engine import generate_verdicts, format_verdict_telegram
 
     fixtures = fetch_upcoming(days_ahead=2)
     logger.info(f"{len(fixtures)} matchs a analyser")
@@ -48,7 +46,7 @@ async def run_pipeline():
 
         logger.info(f"Analyse: {home_name} vs {away_name}")
 
-        # Données
+        # Donnees
         home_stats = fetch_team_stats(fix["home_team_id"])
         away_stats = fetch_team_stats(fix["away_team_id"])
         home_inj   = fetch_injuries(fix["home_team_id"])
@@ -59,18 +57,26 @@ async def run_pipeline():
         odds_1x2  = odds_data.get("odds_1x2",  {})
         odds_ou25 = odds_data.get("odds_ou25", {})
 
-        # AIS-F simple : -5% par blessé clé (max -25%)
+        # Fallback cotes de reference si API vide
+        if not odds_1x2:
+            odds_1x2, odds_ou25 = get_reference_odds(
+                home_name, away_name, home_stats, away_stats
+            )
+
+        # AIS-F : -5% par blesse cle (max -25%)
         ais_home = max(-0.25, -0.05 * min(len(home_inj), 5))
         ais_away = max(-0.25, -0.05 * min(len(away_inj), 5))
 
-        # DCS simplifié
-        dcs = 60
-        if home_stats: dcs += 10
-        if away_stats: dcs += 10
-        if odds_1x2:   dcs += 15
-        if h2h:        dcs += 5
+        # DCS
+        dcs = 55
+        if home_stats.get("matches_played", 0) > 0: dcs += 10
+        if away_stats.get("matches_played", 0) > 0: dcs += 10
+        if odds_1x2.get("source") == "api_football":  dcs += 15
+        else:                                          dcs += 5
+        if h2h:  dcs += 5
+        if home_inj or away_inj: dcs += 5
 
-        # Modèle
+        # Modele Dixon-Coles
         xg_home, xg_away = compute_xg(
             home_stats, away_stats,
             home_capacity=fix.get("venue_capacity", 0),
@@ -82,10 +88,23 @@ async def run_pipeline():
         # Verdicts
         verdicts = generate_verdicts(model, odds_1x2, odds_ou25, dcs)
 
-        # Publier sur Telegram
+        # Infos supplementaires
+        inj_home_str = f"{len(home_inj)} blesse(s)" if home_inj else "aucun"
+        inj_away_str = f"{len(away_inj)} blesse(s)" if away_inj else "aucun"
+        source_str   = odds_1x2.get("source", "reference")
+
         msg = format_verdict_telegram(
             home_name, away_name, kickoff, model, verdicts, dcs
         )
+
+        # Ajouter infos contexte
+        context = (
+            f"\n_Blessés: {home_name} {inj_home_str} | "
+            f"{away_name} {inj_away_str}_\n"
+            f"_Source cotes: {source_str}_"
+        )
+        msg = msg + context
+
         await send_telegram(msg)
 
     logger.info("=== PIPELINE TERMINE ===")
@@ -93,6 +112,7 @@ async def run_pipeline():
 
 async def send_telegram(text):
     if not BOT_TOKEN or not CHANNEL_ID:
+        logger.warning("Telegram non configure")
         return
     try:
         bot = Bot(token=BOT_TOKEN)
@@ -111,9 +131,9 @@ async def main():
     logger.info(f"Data directory: {DATA_DIR}")
 
     await send_telegram(
-        "*APEX-OMEGA-EPL demarré*\n"
-        f"📅 {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC\n"
-        "_Étape 2 — Modèle Dixon-Coles actif_"
+        "*APEX-OMEGA-EPL demarre*\n"
+        f"Date: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC\n"
+        "_Dixon-Coles + Fallback cotes actifs_"
     )
 
     await run_pipeline()
