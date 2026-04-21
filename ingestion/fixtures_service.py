@@ -142,7 +142,12 @@ def fetch_h2h(home_id, away_id, n=10):
 def fetch_team_stats(team_id):
     cache = _cache_path(f"stats_{team_id}")
     if _is_fresh(cache, ttl_hours=12):
-        return _load(cache)
+        data = _load(cache)
+        # Valider que le cache est un dict valide (pas une liste vide)
+        if isinstance(data, dict) and data:
+            return data
+        # Cache corrompu — forcer un refresh
+        logger.warning(f"Cache stats corrompu pour team {team_id}, refresh force")
     try:
         resp = requests.get(
             f"{BASE_URL}/teams/statistics",
@@ -155,7 +160,15 @@ def fetch_team_stats(team_id):
             timeout=10,
         )
         resp.raise_for_status()
-        data  = resp.json().get("response", {})
+        raw   = resp.json()
+        errors = raw.get("errors", {})
+        if errors:
+            logger.warning(f"API stats erreur: {errors}")
+            return _load(cache) if cache.exists() else {}
+        data  = raw.get("response", {})
+        # Si response est une liste (format inattendu), prendre le premier element
+        if isinstance(data, list):
+            data = data[0] if data else {}
         stats = _parse_stats(data)
         _save(cache, stats)
         return stats
@@ -165,7 +178,8 @@ def fetch_team_stats(team_id):
 
 
 def _parse_stats(data):
-    if not data:
+    # Defensive: si data est une liste ou pas un dict, retourner {}
+    if not data or not isinstance(data, dict):
         return {}
     goals  = data.get("goals", {})
     played = data.get("fixtures", {}).get("played", {})

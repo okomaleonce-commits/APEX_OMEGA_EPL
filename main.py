@@ -114,6 +114,9 @@ async def run_pipeline():
             try:
                 home_stats = fetch_team_stats(fix["home_team_id"])
                 away_stats = fetch_team_stats(fix["away_team_id"])
+                # Securite : s'assurer que les stats sont des dicts
+                if not isinstance(home_stats, dict): home_stats = {}
+                if not isinstance(away_stats, dict): away_stats = {}
                 home_inj   = fetch_injuries(fix["home_team_id"])
                 away_inj   = fetch_injuries(fix["away_team_id"])
                 h2h        = fetch_h2h(fix["home_team_id"], fix["away_team_id"])
@@ -204,7 +207,10 @@ async def run_pipeline():
                 await send_channel(msg)
 
             except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
                 logger.error(f"Erreur {home_name} vs {away_name}: {e}")
+                logger.error(f"TRACEBACK COMPLET:\n{tb}")
 
         log_pipeline_run(len(fixtures), total_signals)
         logger.info(f"=== PIPELINE TERMINE === {total_signals} signaux")

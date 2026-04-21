@@ -175,21 +175,43 @@ async def dispatch_command(bot, message, run_pipeline_fn):
 
 
 async def handle_refresh(bot, chat_id):
-    """Supprime le cache fixtures pour forcer un re-fetch immediat."""
+    """Supprime tous les caches pour forcer un re-fetch complet."""
     import os
+    import json
     from pathlib import Path
     data_dir  = Path(os.getenv("RENDER_DISK_PATH", "./data"))
     cache_dir = data_dir / "cache"
     deleted   = []
-    for f in cache_dir.glob("fixtures_*.json"):
-        f.unlink()
-        deleted.append(f.name)
-    for f in cache_dir.glob("odds_all_epl.json"):
-        f.unlink()
-        deleted.append(f.name)
+    corrupted = []
+
+    if not cache_dir.exists():
+        await bot.send_message(chat_id=chat_id, text="Dossier cache introuvable.")
+        return
+
+    # Supprimer fixtures et odds
+    for pattern in ["fixtures_*.json", "odds_all_epl.json", "odds_*.json"]:
+        for f in cache_dir.glob(pattern):
+            f.unlink()
+            deleted.append(f.name)
+
+    # Detecter et supprimer les caches stats corrompus (listes au lieu de dicts)
+    for f in cache_dir.glob("stats_*.json"):
+        try:
+            with open(f) as fp:
+                data = json.load(fp)
+            if not isinstance(data, dict) or not data:
+                f.unlink()
+                corrupted.append(f.name)
+        except Exception:
+            f.unlink()
+            corrupted.append(f.name)
+
+    msg = ""
     if deleted:
-        msg = "Cache supprime:\n" + "\n".join(f"  - {d}" for d in deleted)
-        msg += "\n\nLancez /analyse pour recharger."
-    else:
-        msg = "Aucun cache a supprimer.\nLancez /analyse."
+        msg += "Cache supprime:\n" + "\n".join(f"  - {d}" for d in deleted)
+    if corrupted:
+        msg += "\n\nStats corrompus supprimes:\n" + "\n".join(f"  - {c}" for c in corrupted)
+    if not deleted and not corrupted:
+        msg = "Aucun cache a supprimer."
+    msg += "\n\nLancez /analyse pour recharger."
     await bot.send_message(chat_id=chat_id, text=msg)
