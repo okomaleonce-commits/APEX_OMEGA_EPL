@@ -46,7 +46,7 @@ def _save(path, data):
         json.dump(data, f, indent=2)
 
 
-def fetch_upcoming(days_ahead=3):
+def fetch_upcoming(days_ahead=7):
     cache = _cache_path("fixtures_upcoming")
     if _is_fresh(cache):
         return _load(cache)
