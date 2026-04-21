@@ -95,7 +95,7 @@ async def run_pipeline():
         from decisions.verdict_engine import generate_verdicts, format_verdict_telegram
         from storage.signals_repo import save_signal, save_no_bet, log_pipeline_run
 
-        fixtures = fetch_upcoming(days_ahead=2)
+        fixtures = fetch_upcoming(days_ahead=7)
         logger.info(f"{len(fixtures)} matchs a analyser")
 
         if not fixtures:
