@@ -17,8 +17,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN", "")
-CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "")
+BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN", "") or os.getenv("BOT_TOKEN", "")
+CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "") or os.getenv("CHAT_ID", "")
 DATA_DIR   = Path(os.getenv("RENDER_DISK_PATH", "./data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 

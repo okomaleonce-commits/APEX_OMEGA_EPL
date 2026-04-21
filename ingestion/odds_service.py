@@ -8,7 +8,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-API_KEY_AF    = os.getenv("FOOTBALL_DATA_API_KEY", "")
+API_KEY_AF = os.getenv("FOOTBALL_DATA_API_KEY", "") or os.getenv("API_KEY", "")
 DATA_DIR      = Path(os.getenv("RENDER_DISK_PATH", "./data"))
 CACHE_DIR     = DATA_DIR / "cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)

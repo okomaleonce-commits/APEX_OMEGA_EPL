@@ -24,6 +24,7 @@ async def handle_start(bot, chat_id):
 
 async def handle_status(bot, chat_id):
     from storage.signals_repo import get_stats, DB_PATH
+    import os
     stats   = get_stats()
     db_size = DB_PATH.stat().st_size / 1024 if DB_PATH.exists() else 0
     now     = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M")
@@ -55,6 +56,7 @@ async def handle_analyse(bot, chat_id, run_pipeline_fn):
 
 async def handle_bilan(bot, chat_id):
     from storage.signals_repo import get_stats, DB_PATH
+    import os
     stats   = get_stats()
     details = ""
     if DB_PATH.exists():
@@ -95,7 +97,7 @@ async def handle_bilan(bot, chat_id):
 
 
 async def handle_api(bot, chat_id):
-    api_key = os.getenv("FOOTBALL_DATA_API_KEY", "")
+    api_key = os.getenv("FOOTBALL_DATA_API_KEY", "") or os.getenv("API_KEY", "")
     results = []
     if api_key:
         for headers, label in [
