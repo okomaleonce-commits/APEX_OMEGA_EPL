@@ -72,10 +72,15 @@ def fetch_upcoming(days_ahead=7):
             timeout=10,
         )
         resp.raise_for_status()
-        raw      = resp.json().get("response", [])
+        data     = resp.json()
+        errors   = data.get("errors", {})
+        if errors:
+            logger.error(f"API-Football erreur: {errors}")
+            return _load(cache) if cache.exists() else []
+        raw      = data.get("response", [])
         fixtures = [_parse(f) for f in raw]
         _save(cache, fixtures)
-        logger.info(f"{len(fixtures)} fixtures EPL recuperes")
+        logger.info(f"{len(fixtures)} fixtures EPL recuperes (J+7)")
         return fixtures
     except Exception as e:
         logger.error(f"Erreur fetch fixtures: {e}")
@@ -228,3 +233,42 @@ def fetch_injuries(team_id, fixture_id=None):
     except Exception as e:
         logger.error(f"Erreur injuries {team_id}: {e}")
         return _load(cache) if cache.exists() else []
+
+
+def test_api_key():
+    """
+    Teste la cle API-Football et retourne les details du compte.
+    Appele au demarrage pour diagnostiquer les problemes d'auth.
+    """
+    if not API_KEY:
+        return {"status": "ERREUR", "detail": "CLE API VIDE — FOOTBALL_DATA_API_KEY non configuree"}
+
+    # Tenter les deux formats d'authentification
+    for headers, mode in [
+        ({"x-apisports-key": API_KEY},                           "direct"),
+        ({"x-rapidapi-key": API_KEY, "x-rapidapi-host": API_HOST}, "rapidapi"),
+    ]:
+        try:
+            resp = requests.get(
+                f"{BASE_URL}/status",
+                headers=headers,
+                timeout=8,
+            )
+            data   = resp.json()
+            errors = data.get("errors", {})
+            if not errors:
+                r   = data.get("response", {})
+                sub = r.get("subscription", {})
+                req = r.get("requests",    {})
+                return {
+                    "status":  "OK",
+                    "mode":    mode,
+                    "plan":    sub.get("plan", "?"),
+                    "current": req.get("current", "?"),
+                    "limit":   req.get("limit_day", "?"),
+                    "detail":  f"Plan={sub.get('plan','?')} | {req.get('current','?')}/{req.get('limit_day','?')} req/jour",
+                }
+        except Exception as e:
+            logger.warning(f"test_api_key [{mode}]: {e}")
+
+    return {"status": "ERREUR", "detail": "Auth echouee — verifier la cle dans Render > Environment"}
