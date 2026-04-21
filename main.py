@@ -49,6 +49,31 @@ def get_tier(team_name):
     return 5
 
 
+def _acl_check(injured):
+    """Calcule acl_check depuis la liste des blesses."""
+    by_line = {}
+    for p in injured:
+        line = p.get("line", "defense")
+        if line in ("defense", "midfield", "attack"):
+            by_line[line] = by_line.get(line, 0) + 1
+    factor, flag = 1.0, None
+    for line, count in by_line.items():
+        if count >= 4:
+            factor, flag = 2.0, "EFFONDREMENT_LIGNE"
+            break
+        elif count >= 3:
+            factor, flag = max(factor, 1.5), "LIGNE_CRITIQUE"
+    return {"active": flag is not None, "factor": factor,
+            "flag": flag, "by_line": by_line}
+
+
+def _lineup_dict(injured):
+    """Formate lineup au format dict attendu par r9_acl."""
+    players = [{"name": p.get("name", ""), "line": "defense"} for p in injured]
+    return {"injured_players": players, "acl_check": _acl_check(players),
+            "lineup_confirmed": False, "ais_f_raw": 0.0}
+
+
 def build_match_ctx(fix, home_inj, away_inj, h2h,
                     home_stats, away_stats, home_tier, away_tier):
     h2h_avg = (sum(m.get("total_goals", 0) for m in h2h) / len(h2h)
@@ -60,10 +85,8 @@ def build_match_ctx(fix, home_inj, away_inj, h2h,
         "away_tier":  away_tier,
         "home_stake": 8 if home_tier <= 2 else (10 if home_tier == 5 else 3),
         "away_stake": 8 if away_tier <= 2 else (10 if away_tier == 5 else 3),
-        "home_lineup":     [{"name": p.get("name",""), "line": "defense"}
-                            for p in home_inj],
-        "away_lineup":     [{"name": p.get("name",""), "line": "defense"}
-                            for p in away_inj],
+        "home_lineup":     _lineup_dict(home_inj),
+        "away_lineup":     _lineup_dict(away_inj),
         "h2h_matches":     h2h,
         "h2h_avg_goals":   round(h2h_avg, 2),
         "home_te_goals":   0, "home_te_hours": 999,
