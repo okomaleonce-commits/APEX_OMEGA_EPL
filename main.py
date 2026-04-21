@@ -154,16 +154,15 @@ async def run_pipeline():
                     fix, home_inj, away_inj, h2h,
                     home_stats, away_stats, home_tier, away_tier
                 )
-                adj_probs, moratoriums, rules_active = apply_all_rules(
+                # Injecter les cotes dans le contexte pour R5 Big6 Away
+                match_ctx["home_raw_odds"] = odds_1x2.get("home_raw", 1.5)
+                match_ctx["away_raw_odds"] = odds_1x2.get("away_raw", 2.5)
+                adj_probs, moratoriums, rules_active, xg_home, xg_away, multi_rule = apply_all_rules(
                     match_ctx, probs, xg_home, xg_away
                 )
                 model["home"] = adj_probs.get("home", model["home"])
                 model["draw"] = adj_probs.get("draw", model["draw"])
                 model["away"] = adj_probs.get("away", model["away"])
-
-                multi_rule = len([r for r in rules_active if any(
-                    t in r for t in ["R6","R7","R8","R9","R10","R11"]
-                )]) >= 2
 
                 verdicts = generate_verdicts(
                     model, odds_1x2, odds_ou25, dcs,
