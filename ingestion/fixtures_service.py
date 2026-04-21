@@ -49,7 +49,11 @@ def _save(path, data):
 def fetch_upcoming(days_ahead=7):
     cache = _cache_path("fixtures_upcoming")
     if _is_fresh(cache):
-        return _load(cache)
+        cached = _load(cache)
+        # Si cache vide, forcer un refresh (matchs pas encore charges)
+        if cached:
+            return cached
+        logger.info("Cache fixtures vide — forcage refresh")
 
     today = datetime.now(timezone.utc).date()
     end   = today + timedelta(days=days_ahead)

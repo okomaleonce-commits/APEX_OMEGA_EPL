@@ -256,6 +256,10 @@ async def cmd_api(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     from interfaces.telegram_commands import handle_api
     await handle_api(ctx.bot, update.effective_chat.id)
 
+async def cmd_refresh(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    from interfaces.telegram_commands import handle_refresh
+    await handle_refresh(ctx.bot, update.effective_chat.id)
+
 
 # ── Main ──────────────────────────────────────────────────────────
 
@@ -294,6 +298,7 @@ async def main():
     app.add_handler(CommandHandler("analyse", cmd_analyse))
     app.add_handler(CommandHandler("bilan",   cmd_bilan))
     app.add_handler(CommandHandler("api",     cmd_api))
+    app.add_handler(CommandHandler("refresh", cmd_refresh))
 
     await app.initialize()
     await app.start()
@@ -314,7 +319,7 @@ async def main():
     await send_channel(
         "APEX-OMEGA-EPL v1.3 operationnel\n"
         f"Date: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC\n"
-        "Commandes: /start /help /status /analyse /bilan /api"
+        "Commandes: /start /help /status /analyse /bilan /api /refresh"
     )
 
     # Analyse immediate

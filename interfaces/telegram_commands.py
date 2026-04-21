@@ -141,6 +141,7 @@ async def handle_help(bot, chat_id):
         "/analyse — Analyse immediate\n"
         "/bilan   — P&L par marche\n"
         "/api     — Test connexion APIs\n"
+        "/refresh — Vider le cache fixtures\n"
         "/help    — Cette aide\n\n"
         "Analyses auto: 08h/14h/20h UTC\n"
         "Resolver:      23h UTC"
@@ -171,3 +172,24 @@ async def dispatch_command(bot, message, run_pipeline_fn):
             chat_id=chat_id,
             text=f"Commande inconnue: {cmd}\n/help pour la liste."
         )
+
+
+async def handle_refresh(bot, chat_id):
+    """Supprime le cache fixtures pour forcer un re-fetch immediat."""
+    import os
+    from pathlib import Path
+    data_dir  = Path(os.getenv("RENDER_DISK_PATH", "./data"))
+    cache_dir = data_dir / "cache"
+    deleted   = []
+    for f in cache_dir.glob("fixtures_*.json"):
+        f.unlink()
+        deleted.append(f.name)
+    for f in cache_dir.glob("odds_all_epl.json"):
+        f.unlink()
+        deleted.append(f.name)
+    if deleted:
+        msg = "Cache supprime:\n" + "\n".join(f"  - {d}" for d in deleted)
+        msg += "\n\nLancez /analyse pour recharger."
+    else:
+        msg = "Aucun cache a supprimer.\nLancez /analyse."
+    await bot.send_message(chat_id=chat_id, text=msg)
