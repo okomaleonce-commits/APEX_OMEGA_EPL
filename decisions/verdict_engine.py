@@ -64,9 +64,8 @@ def evaluate_market(market_key, model_prob, odds_data,
     cat  = f"1x2_{get_odds_category(raw)}" if "1x2" in market_key else market_key
     min_edge = EDGE_MIN.get(cat, 0.05)
 
-    # R15 : seuil réduit si >= 2 règles v1.3 actives sur marché high
     if multi_rule_active and cat == "1x2_high":
-        min_edge = 0.05  # 6% → 5%
+        min_edge = 0.05
 
     if edge < min_edge:
         return None
@@ -89,9 +88,11 @@ def evaluate_market(market_key, model_prob, odds_data,
 
 def generate_verdicts(model, odds_1x2, odds_ou25, dcs_score,
                       moratoriums=None, multi_rule_active=False,
-                      prefer_dnb=False):
+                      prefer_dnb=False, odds_btts=None):
     if moratoriums is None:
         moratoriums = []
+    if odds_btts is None:
+        odds_btts = {}
 
     blocked = {m.get("blocked_market") for m in moratoriums}
     verdicts = []
@@ -111,7 +112,6 @@ def generate_verdicts(model, odds_1x2, odds_ou25, dcs_score,
             multi_rule_active=multi_rule_active,
         )
         if v:
-            # R13 : si ACL conditionnel → signaler recommandation DNB
             if prefer_dnb and key == "1x2_away":
                 v["dnb_recommended"] = True
             verdicts.append(v)
@@ -130,6 +130,20 @@ def generate_verdicts(model, odds_1x2, odds_ou25, dcs_score,
         })
         if v: verdicts.append(v)
 
+    if "btts_yes" not in blocked:
+        v = evaluate_market("btts_yes", model.get("btts_yes", 0), {
+            "raw":           odds_btts.get("yes_raw",  0),
+            "demargin_prob": odds_btts.get("yes_prob", 0),
+        })
+        if v: verdicts.append(v)
+
+    if "btts_no" not in blocked:
+        v = evaluate_market("btts_no", model.get("btts_no", 0), {
+            "raw":           odds_btts.get("no_raw",  0),
+            "demargin_prob": odds_btts.get("no_prob", 0),
+        })
+        if v: verdicts.append(v)
+
     if dcs_score < DCS_GATE:
         for v in verdicts:
             v["status"] = "CONDITIONNEL"
@@ -141,7 +155,7 @@ def generate_verdicts(model, odds_1x2, odds_ou25, dcs_score,
 def format_verdict_telegram(home, away, kickoff, model, verdicts,
                              dcs_score, n_inj_home=0, n_inj_away=0,
                              odds_source="reference", rules_active=None,
-                             moratoriums=None):
+                             moratoriums=None, enrichment_source=None):
     if rules_active is None:
         rules_active = []
     if moratoriums is None:
@@ -156,7 +170,7 @@ def format_verdict_telegram(home, away, kickoff, model, verdicts,
 
     lines = [
         "=" * 38,
-        "   APEX-ENGINE EPL v1.3",
+        "   APEX-ENGINE EPL v1.4",
         "=" * 38,
         f"Match  : {home} vs {away}",
         f"Heure  : {ko} UTC",
@@ -170,14 +184,15 @@ def format_verdict_telegram(home, away, kickoff, model, verdicts,
         f"Score  : {model['modal_score'][0]}-{model['modal_score'][1]} (probable)",
     ]
 
-    # Règles actives
+    if enrichment_source:
+        lines.append(f"Enrichissement: {enrichment_source}")
+
     if rules_active:
         lines.append("-" * 38)
-        lines.append("REGLES ACTIVES v1.3")
+        lines.append("REGLES ACTIVES v1.4")
         for r in rules_active[:6]:
             lines.append(f"  [{r}]")
 
-    # Moratoriums
     if moratoriums:
         lines.append("-" * 38)
         lines.append("MORATORIUMS")
@@ -213,6 +228,6 @@ def format_verdict_telegram(home, away, kickoff, model, verdicts,
         lines.append("[!] DCS bas — confirmer compos H-2 avant de jouer")
 
     lines.append("=" * 38)
-    lines.append("APEX-ENGINE v1.3 | EPL 2025/26")
+    lines.append("APEX-ENGINE v1.4 | EPL 2025/26")
 
     return "\n".join(lines)
