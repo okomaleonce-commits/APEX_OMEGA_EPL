@@ -26,12 +26,15 @@ requests.get = patched_requests_get
 def apply_rule_engine_patch():
     try:
         import rules.rule_engine as rule_engine
-    except Exception:
-        return
+    except Exception as exc:
+        logging.getLogger(__name__).warning(f"ACL hotfix not applied: {exc}")
+        return False
 
     original = getattr(rule_engine, "r9_acl", None)
-    if not original or getattr(original, "_apex_safe_patch", False):
-        return
+    if not original:
+        return False
+    if getattr(original, "_apex_safe_patch", False):
+        return True
 
     def safe_r9_acl(lineup_data, probs, is_home_team):
         allow_unconfirmed = os.getenv("ALLOW_UNCONFIRMED_ACL", "false").lower() in {"1", "true", "yes", "on"}
@@ -45,3 +48,8 @@ def apply_rule_engine_patch():
 
     safe_r9_acl._apex_safe_patch = True
     rule_engine.r9_acl = safe_r9_acl
+    logging.getLogger(__name__).warning("APEX HOTFIX ACTIVE: unconfirmed ACL disabled")
+    return True
+
+
+apply_rule_engine_patch()
