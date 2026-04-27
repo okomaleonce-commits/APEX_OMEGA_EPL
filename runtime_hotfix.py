@@ -7,7 +7,6 @@ from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
-# Stop http client INFO logs from printing Telegram URLs with bot token.
 for name in ("httpx", "httpcore", "telegram", "telegram.ext"):
     logging.getLogger(name).setLevel(logging.WARNING)
 
@@ -179,5 +178,36 @@ def apply_rule_engine_patch():
     return True
 
 
+def apply_verdict_gate_patch():
+    try:
+        import decisions.verdict_engine as verdict_engine
+    except Exception as exc:
+        logger.warning(f"Verdict gate hotfix not applied: {exc}")
+        return False
+
+    original = getattr(verdict_engine, "generate_verdicts", None)
+    if not original:
+        return False
+    if getattr(original, "_apex_real_odds_gate", False):
+        return True
+
+    def gated_generate_verdicts(model, odds_1x2, odds_ou25, dcs_score, *args, **kwargs):
+        allow_reference = os.getenv("ALLOW_REFERENCE_ODDS_SIGNALS", "false").lower() in {"1", "true", "yes", "on"}
+        src_1x2 = (odds_1x2 or {}).get("source", "")
+        src_ou = (odds_ou25 or {}).get("source", "")
+        real_sources = {"api_football", "odds_api_io", "footystats"}
+        has_real_odds = src_1x2 in real_sources or src_ou in real_sources
+        if not has_real_odds and not allow_reference:
+            logger.warning("APEX HARD GATE: NO BET — real odds unavailable; reference_model signals blocked")
+            return []
+        return original(model, odds_1x2, odds_ou25, dcs_score, *args, **kwargs)
+
+    gated_generate_verdicts._apex_real_odds_gate = True
+    verdict_engine.generate_verdicts = gated_generate_verdicts
+    logger.warning("APEX HOTFIX ACTIVE: real-odds gate enabled")
+    return True
+
+
 apply_odds_service_patch()
 apply_rule_engine_patch()
+apply_verdict_gate_patch()
