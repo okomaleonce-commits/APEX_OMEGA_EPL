@@ -48,6 +48,59 @@ def _team_match(a, b):
     return bool(set(aa.split()) & set(bb.split()))
 
 
+def _stats_weak(stats):
+    if not isinstance(stats, dict) or not stats:
+        return True
+    return (stats.get("matches_played") or 0) <= 0 or (stats.get("goals_scored_avg") is None)
+
+
+def apply_free_data_patch():
+    try:
+        import ingestion.fixtures_service as fixtures_service
+        from ingestion import free_data_service
+    except Exception as exc:
+        logger.warning(f"Free-data hotfix not applied: {exc}")
+        return False
+
+    if getattr(fixtures_service, "_apex_free_data_hotfix", False):
+        return True
+
+    original_fetch_upcoming = fixtures_service.fetch_upcoming
+    original_fetch_team_stats = fixtures_service.fetch_team_stats
+    original_fetch_h2h = fixtures_service.fetch_h2h
+
+    def fetch_upcoming_auto(days_ahead=7):
+        primary = original_fetch_upcoming(days_ahead=days_ahead)
+        if primary:
+            return primary
+        if os.getenv("ENABLE_FREE_AUTO_DATA", "true").lower() not in {"1", "true", "yes", "on"}:
+            return primary
+        fallback = free_data_service.fetch_upcoming_free(days_ahead=days_ahead)
+        if fallback:
+            logger.warning(f"APEX FREE DATA: {len(fallback)} fixtures via football-data.org")
+            return fallback
+        return primary
+
+    def fetch_team_stats_auto(team_id):
+        stats = original_fetch_team_stats(team_id)
+        if not _stats_weak(stats):
+            return stats
+        if os.getenv("ENABLE_FREE_AUTO_DATA", "true").lower() not in {"1", "true", "yes", "on"}:
+            return stats
+        # Impossible de matcher un nom depuis team_id seul ici. Le fallback est injecte via compute_xg context in main path.
+        return stats
+
+    def fetch_h2h_auto(home_id, away_id, n=10):
+        return original_fetch_h2h(home_id, away_id, n=n)
+
+    fixtures_service.fetch_upcoming = fetch_upcoming_auto
+    fixtures_service.fetch_team_stats = fetch_team_stats_auto
+    fixtures_service.fetch_h2h = fetch_h2h_auto
+    fixtures_service._apex_free_data_hotfix = True
+    logger.warning("APEX HOTFIX ACTIVE: free auto-data fallback enabled")
+    return True
+
+
 def apply_odds_service_patch():
     try:
         import ingestion.odds_service as odds_service
@@ -208,6 +261,7 @@ def apply_verdict_gate_patch():
     return True
 
 
+apply_free_data_patch()
 apply_odds_service_patch()
 apply_rule_engine_patch()
 apply_verdict_gate_patch()
