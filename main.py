@@ -220,14 +220,24 @@ async def run_pipeline():
                 home_inj   = fetch_injuries(fix["home_team_id"])
                 away_inj   = fetch_injuries(fix["away_team_id"])
                 h2h        = fetch_h2h(fix["home_team_id"], fix["away_team_id"])
-                odds_data  = get_odds_for_match(home_name, away_name)
+                # Priorité 1 : cotes par fixture_id (précis)
+                from ingestion.odds_service import fetch_odds_for_fixture
+                odds_data = fetch_odds_for_fixture(fixture_id)
 
-                odds_1x2  = odds_data.get("odds_1x2",  {})
-                odds_ou25 = odds_data.get("odds_ou25", {})
+                # Priorité 2 : fallback par nom d'équipe (legacy)
+                if not odds_data or not odds_data.get("odds_1x2"):
+                    odds_data = get_odds_for_match(home_name, away_name)
+
+                odds_1x2  = odds_data.get("odds_1x2",  {}) if odds_data else {}
+                odds_ou25 = odds_data.get("odds_ou25", {}) if odds_data else {}
+                has_real_odds = bool(odds_1x2) and odds_1x2.get("source") != "reference_model"
+
+                # Priorité 3 : cotes de référence (fallback analytique)
                 if not odds_1x2:
                     odds_1x2, odds_ou25 = get_reference_odds(
                         home_name, away_name, home_stats, away_stats
                     )
+                    has_real_odds = False
 
                 n_inj_home = len(home_inj)
                 n_inj_away = len(away_inj)
