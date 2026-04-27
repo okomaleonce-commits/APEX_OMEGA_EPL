@@ -56,12 +56,15 @@ def _patch_acl_rule():
     def safe_r9_acl(lineup_data, probs, is_home_team):
         if isinstance(lineup_data, dict):
             allow_unconfirmed = os.getenv("ALLOW_UNCONFIRMED_ACL", "true").lower() in {"1", "true", "yes", "on"}
+
+            # Bypass check lineup_confirmed si allow_unconfirmed
             if lineup_data.get("lineup_confirmed") is False and not allow_unconfirmed:
                 return probs, 1.0, None, False
 
+            # Cap blessés TOUJOURS actif — protège contre liste saison entiere
             injured_players = lineup_data.get("injured_players") or []
-            max_players = int(os.getenv("ACL_MAX_INJURY_LIST_SIZE", "8"))
-            if len(injured_players) > max_players and not allow_unconfirmed:
+            max_players = int(os.getenv("ACL_MAX_INJURY_LIST_SIZE", "5"))
+            if len(injured_players) > max_players:
                 return probs, 1.0, None, False
 
         return original_r9_acl(lineup_data, probs, is_home_team)

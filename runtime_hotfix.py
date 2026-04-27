@@ -217,12 +217,23 @@ def apply_rule_engine_patch():
 
     def safe_r9_acl(lineup_data, probs, is_home_team):
         allow_unconfirmed = os.getenv("ALLOW_UNCONFIRMED_ACL", "true").lower() in {"1", "true", "yes", "on"}
-        if isinstance(lineup_data, dict) and not allow_unconfirmed:
-            if lineup_data.get("lineup_confirmed") is False:
+        if isinstance(lineup_data, dict):
+            # Check 1 : lineup confirmée — bypass si allow_unconfirmed
+            if not allow_unconfirmed and lineup_data.get("lineup_confirmed") is False:
                 return probs, 1.0, None, False
+
+            # Check 2 : cap blessés — TOUJOURS appliqué
+            # > 5 blessés = probablement liste saison entière, pas blessés actuels
+            # Ce cap protège contre l'activation ACL sur toutes les équipes
             injured = lineup_data.get("injured_players") or []
-            if len(injured) > int(os.getenv("ACL_MAX_INJURY_LIST_SIZE", "8")):
+            max_inj = int(os.getenv("ACL_MAX_INJURY_LIST_SIZE", "5"))
+            if len(injured) > max_inj:
+                logger.warning(
+                    f"ACL skip: {len(injured)} blesses > cap {max_inj} "
+                    f"(probablement liste saison, pas blessures actuelles)"
+                )
                 return probs, 1.0, None, False
+
         return original(lineup_data, probs, is_home_team)
 
     safe_r9_acl._apex_safe_patch = True
