@@ -152,10 +152,11 @@ def apply_odds_service_patch():
                     f"https://{odds_service.API_HOST}/odds",
                     headers=odds_service.HEADERS,
                     params={
-                        "league": odds_service.EPL_LEAGUE_ID,
-                        "season": odds_service.EPL_SEASON,
+                        "league":    odds_service.EPL_LEAGUE_ID,
+                        "season":    odds_service.EPL_SEASON,
+                        "next":      10,   # prochains matchs EPL
                         "bookmaker": bookmaker,
-                        "page": page,
+                        "page":      page,
                     },
                     timeout=12,
                 )

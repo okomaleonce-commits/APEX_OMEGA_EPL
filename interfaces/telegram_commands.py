@@ -150,6 +150,21 @@ async def handle_api(bot, chat_id):
     else:
         results.append("API-Football: CLE NON CONFIGUREE")
     results.append("Telegram: OK")
+
+    # Test FootyStats
+    try:
+        from ingestion.footystats_service import test_footystats
+        fs = test_footystats()
+        fs_key     = os.getenv("FOOTYSTATS_KEY", "")
+        fs_preview = (fs_key[:4] + "...") if len(fs_key) > 4 else ("(vide)" if not fs_key else fs_key)
+        results.append(
+            f"FootyStats: {fs['status']}\n"
+            f"  {fs['detail']}\n"
+            f"  Cle: {fs_preview}"
+        )
+    except Exception as e:
+        results.append(f"FootyStats: ERREUR ({e})")
+
     msg = "=== ETAT DES APIS ===\n" + "\n".join(results) + "\n===================="
     await bot.send_message(chat_id=chat_id, text=msg)
 
