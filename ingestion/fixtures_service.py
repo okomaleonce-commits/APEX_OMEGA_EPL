@@ -201,24 +201,37 @@ def _parse_stats(data):
     }
 
 
-def fetch_injuries(team_id, fixture_id=None):
+def fetch_injuries(team_id: int, fixture_id: int = None) -> list[dict]:
     """
-    Recupere les blessures actuelles.
-    Filtre par fixture si disponible, sinon limite a 15 joueurs max.
+    Récupère UNIQUEMENT les blessures actives (prochain match).
+
+    Stratégie :
+    1. Si fixture_id fourni → endpoint /injuries?fixture=ID (le plus précis)
+    2. Sinon → endpoint /injuries?team=ID&season= avec filtre date
+       → seuls les joueurs blessés DEPUIS moins de 60 jours sont retenus
+       → les blessures longue durée de saison (> 60j) sont exclues
     """
-    cache_key = f"injuries_{team_id}_{fixture_id}" if fixture_id else f"injuries_{team_id}"
+    cache_key = f"inj_{team_id}_{fixture_id or 'cur'}"
     cache = _cache_path(cache_key)
-    if _is_fresh(cache, ttl_hours=6):
-        return _load(cache)
+    if _is_fresh(cache, ttl_hours=4):
+        data = _load(cache)
+        if isinstance(data, list):
+            return data
+
+    if not API_KEY:
+        return []
 
     try:
-        params = {
-            "league": EPL_LEAGUE_ID,
-            "season": EPL_SEASON,
-            "team":   team_id,
-        }
         if fixture_id:
-            params["fixture"] = fixture_id
+            # Méthode précise : blessures liées à ce fixture
+            params = {"fixture": fixture_id}
+        else:
+            # Méthode fallback : blessures de la saison filtrées
+            params = {
+                "league": EPL_LEAGUE_ID,
+                "season": EPL_SEASON,
+                "team":   team_id,
+            }
 
         resp = requests.get(
             f"{BASE_URL}/injuries",
@@ -227,25 +240,51 @@ def fetch_injuries(team_id, fixture_id=None):
             timeout=10,
         )
         resp.raise_for_status()
-        raw_players = resp.json().get("response", [])
+        data   = resp.json()
+        errors = data.get("errors", {})
+        if errors:
+            logger.warning(f"Injuries API error: {errors}")
+            return []
 
+        raw_players = data.get("response", [])
+        today = datetime.now(timezone.utc).date()
         players = []
+
         for item in raw_players:
-            p = item.get("player", {})
+            p     = item.get("player", {})
+            fix   = item.get("fixture", {})
+
+            # Filtre date : ne garder que les blessures récentes (≤ 60 jours)
+            # Si le match de blessure est ancien → blessure longue durée → exclure
+            if not fixture_id:
+                match_date_str = fix.get("date", "")
+                if match_date_str:
+                    try:
+                        match_date = datetime.fromisoformat(
+                            match_date_str.replace("Z", "+00:00")
+                        ).date()
+                        days_ago = (today - match_date).days
+                        if days_ago > 60:
+                            # Blessure ancienne (> 60 jours) → probablement longue durée
+                            continue
+                    except Exception:
+                        pass
+
             players.append({
                 "name":        p.get("name", ""),
-                "position":    p.get("position", ""),
+                "position":    p.get("position", "").lower(),
                 "injury_type": item.get("type", ""),
                 "reason":      item.get("reason", ""),
             })
 
-        # Max 15 pour eviter les retours massifs de toute la saison
-        players = players[:15]
+        # Cap de sécurité renforcé : max 8 blessures "actives"
+        players = players[:8]
         _save(cache, players)
+        logger.info(f"Injuries team {team_id}: {len(players)} actives (filtrées)")
         return players
 
     except Exception as e:
-        logger.error(f"Erreur injuries {team_id}: {e}")
+        logger.error(f"Erreur injuries team {team_id}: {e}")
         return _load(cache) if cache.exists() else []
 
 

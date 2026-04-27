@@ -231,6 +231,9 @@ async def run_pipeline():
 
                 n_inj_home = len(home_inj)
                 n_inj_away = len(away_inj)
+                # Affichage honnête : "N/A" si données non filtrées
+                inj_display_home = str(n_inj_home) if n_inj_home <= 8 else "N/A (liste saison)"
+                inj_display_away = str(n_inj_away) if n_inj_away <= 8 else "N/A (liste saison)"
                 ais_home   = max(-0.25, -0.05 * min(n_inj_home, 5))
                 ais_away   = max(-0.25, -0.05 * min(n_inj_away, 5))
                 home_tier  = get_tier(home_name)
@@ -267,11 +270,22 @@ async def run_pipeline():
                 model["draw"] = adj_probs.get("draw", model["draw"])
                 model["away"] = adj_probs.get("away", model["away"])
 
+                # Signaux uniquement si vraies cotes OU si explicitement autorisé
+                allow_ref = os.getenv("ALLOW_REFERENCE_ODDS_SIGNALS", "true").lower() in {"1","true","yes","on"}
                 verdicts = generate_verdicts(
                     model, odds_1x2, odds_ou25, dcs,
                     moratoriums=moratoriums,
                     multi_rule_active=multi_rule,
-                )
+                    reference_odds_mode=(not has_real_odds),
+                ) if (has_real_odds or allow_ref) else []
+                if not has_real_odds and verdicts:
+                    logger.warning(
+                        f"{home_name} vs {away_name}: signaux sur cotes fictives "
+                        f"(reference_model) — DCS plafonné à 60"
+                    )
+                    dcs = min(dcs, 60)
+                    for v in verdicts:
+                        v["status"] = "INDICATIF"  # pas VALIDE
 
                 if verdicts:
                     for v in verdicts:
