@@ -190,6 +190,11 @@ async def run_pipeline():
             fetch_upcoming, fetch_team_stats, fetch_injuries, fetch_h2h
         )
         from ingestion.odds_service import get_odds_for_match, get_reference_odds
+        from ingestion.footystats_service import (
+            get_team_stats as fs_team_stats,
+            calculate_ccr,
+            test_footystats,
+        )
         from models.dixon_coles import compute_xg, run_simulation
         from rules.rule_engine import apply_all_rules
         from decisions.verdict_engine import generate_verdicts, format_verdict_telegram
@@ -212,11 +217,22 @@ async def run_pipeline():
             logger.info(f"Analyse: {home_name} vs {away_name}")
 
             try:
-                home_stats = fetch_team_stats(fix["home_team_id"])
-                away_stats = fetch_team_stats(fix["away_team_id"])
-                # Securite : s'assurer que les stats sont des dicts
+                # Priorité 1 : FootyStats (xG précis, DCS +20pts)
+                home_stats = fs_team_stats(home_name)
+                away_stats = fs_team_stats(away_name)
+
+                # Priorité 2 : API-Football si FootyStats vide
+                if not home_stats:
+                    home_stats = fetch_team_stats(fix["home_team_id"])
+                if not away_stats:
+                    away_stats = fetch_team_stats(fix["away_team_id"])
+
                 if not isinstance(home_stats, dict): home_stats = {}
                 if not isinstance(away_stats, dict): away_stats = {}
+
+                # CCR via FootyStats (Règle R7)
+                ccr_home = calculate_ccr(home_name)
+                ccr_away = calculate_ccr(away_name)
                 home_inj   = fetch_injuries(fix["home_team_id"])
                 away_inj   = fetch_injuries(fix["away_team_id"])
                 h2h        = fetch_h2h(fix["home_team_id"], fix["away_team_id"])
@@ -270,6 +286,12 @@ async def run_pipeline():
                     fix, home_inj, away_inj, h2h,
                     home_stats, away_stats, home_tier, away_tier
                 )
+                match_ctx["home_ccr_ratio"] = ccr_home.get("ratio", 1.0)
+                match_ctx["away_ccr_ratio"] = ccr_away.get("ratio", 1.0)
+                if ccr_home.get("ccr_active"):
+                    logger.info(f"CCR {home_name}: ratio={ccr_home['ratio']} flag={ccr_home['flag']}")
+                if ccr_away.get("ccr_active"):
+                    logger.info(f"CCR {away_name}: ratio={ccr_away['ratio']} flag={ccr_away['flag']}")
                 # Injecter les cotes dans le contexte pour R5 Big6 Away
                 match_ctx["home_raw_odds"] = odds_1x2.get("home_raw", 1.5)
                 match_ctx["away_raw_odds"] = odds_1x2.get("away_raw", 2.5)
