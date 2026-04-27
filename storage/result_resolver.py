@@ -74,6 +74,14 @@ def resolve_signal_result(signal, result):
         outcome = "WIN" if (hg > 0 and ag > 0) else "LOSS"
     elif market == "btts_no":
         outcome = "WIN" if (hg == 0 or ag == 0) else "LOSS"
+    elif market in ("1x2_dnb_home", "dnb_home", "dnb"):
+        if hg > ag:   outcome = "WIN"
+        elif hg == ag: outcome = "VOID"   # remboursement
+        else:         outcome = "LOSS"
+    elif market in ("1x2_dnb_away", "dnb_away"):
+        if ag > hg:   outcome = "WIN"
+        elif hg == ag: outcome = "VOID"
+        else:         outcome = "LOSS"
 
     if outcome is None:
         return
@@ -81,6 +89,8 @@ def resolve_signal_result(signal, result):
     stake = signal.get("max_stake_pct", 0.05)
     if outcome == "WIN":
         pnl = round(stake * (odds - 1), 4)
+    elif outcome == "VOID":
+        pnl = 0.0   # DNB nul = remboursement
     else:
         pnl = round(-stake, 4)
 

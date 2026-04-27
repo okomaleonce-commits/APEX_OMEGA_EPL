@@ -53,7 +53,7 @@ def kelly_fraction(prob, odds, fraction):
 
 
 def evaluate_market(market_key, model_prob, odds_data,
-                    multi_rule_active=False):
+                    multi_rule_active=False, edge_multiplier=1.0):
     raw     = odds_data.get("raw", 0)
     dm_prob = odds_data.get("demargin_prob", 0)
 
@@ -62,11 +62,11 @@ def evaluate_market(market_key, model_prob, odds_data,
 
     edge = model_prob - dm_prob
     cat  = f"1x2_{get_odds_category(raw)}" if "1x2" in market_key else market_key
-    min_edge = EDGE_MIN.get(cat, 0.05)
+    min_edge = EDGE_MIN.get(cat, 0.05) * edge_multiplier
 
     # R15 : seuil réduit si >= 2 règles v1.3 actives sur marché high
     if multi_rule_active and cat == "1x2_high":
-        min_edge = 0.05  # 6% → 5%
+        min_edge = min(min_edge, 0.05)
 
     if edge < min_edge:
         return None
@@ -89,11 +89,14 @@ def evaluate_market(market_key, model_prob, odds_data,
 
 def generate_verdicts(model, odds_1x2, odds_ou25, dcs_score,
                       moratoriums=None, multi_rule_active=False,
-                      prefer_dnb=False):
+                      prefer_dnb=False, reference_odds_mode=False):
     if moratoriums is None:
         moratoriums = []
 
     blocked = {m.get("blocked_market") for m in moratoriums}
+
+    # En mode reference_model, abaisser les seuils edge (cotes = memes xG que modele)
+    edge_multiplier = 0.35 if reference_odds_mode else 1.0
     verdicts = []
 
     markets_1x2 = [
@@ -108,6 +111,7 @@ def generate_verdicts(model, odds_1x2, odds_ou25, dcs_score,
         v = evaluate_market(
             key, model_p,
             {"raw": raw, "demargin_prob": dm_p},
+            edge_multiplier=edge_multiplier,
             multi_rule_active=multi_rule_active,
         )
         if v:

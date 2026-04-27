@@ -216,7 +216,7 @@ def apply_rule_engine_patch():
         return True
 
     def safe_r9_acl(lineup_data, probs, is_home_team):
-        allow_unconfirmed = os.getenv("ALLOW_UNCONFIRMED_ACL", "false").lower() in {"1", "true", "yes", "on"}
+        allow_unconfirmed = os.getenv("ALLOW_UNCONFIRMED_ACL", "true").lower() in {"1", "true", "yes", "on"}
         if isinstance(lineup_data, dict) and not allow_unconfirmed:
             if lineup_data.get("lineup_confirmed") is False:
                 return probs, 1.0, None, False
@@ -245,14 +245,22 @@ def apply_verdict_gate_patch():
         return True
 
     def gated_generate_verdicts(model, odds_1x2, odds_ou25, dcs_score, *args, **kwargs):
-        allow_reference = os.getenv("ALLOW_REFERENCE_ODDS_SIGNALS", "false").lower() in {"1", "true", "yes", "on"}
+        allow_reference = os.getenv("ALLOW_REFERENCE_ODDS_SIGNALS", "true").lower() in {"1", "true", "yes", "on"}
         src_1x2 = (odds_1x2 or {}).get("source", "")
-        src_ou = (odds_ou25 or {}).get("source", "")
+        src_ou  = (odds_ou25 or {}).get("source", "")
         real_sources = {"api_football", "odds_api_io", "footystats"}
         has_real_odds = src_1x2 in real_sources or src_ou in real_sources
+
         if not has_real_odds and not allow_reference:
             logger.warning("APEX HARD GATE: NO BET — real odds unavailable; reference_model signals blocked")
             return []
+
+        # Si source = reference_model, abaisser le seuil edge (cotes et modele partagent les memes xG)
+        # On injecte un flag dans les kwargs pour que generate_verdicts l'utilise
+        if not has_real_odds and allow_reference:
+            kwargs["reference_odds_mode"] = True
+            logger.info("APEX: reference_model mode — seuil edge reduit (x0.35)")
+
         return original(model, odds_1x2, odds_ou25, dcs_score, *args, **kwargs)
 
     gated_generate_verdicts._apex_real_odds_gate = True

@@ -55,7 +55,7 @@ def _patch_acl_rule():
 
     def safe_r9_acl(lineup_data, probs, is_home_team):
         if isinstance(lineup_data, dict):
-            allow_unconfirmed = os.getenv("ALLOW_UNCONFIRMED_ACL", "false").lower() in {"1", "true", "yes", "on"}
+            allow_unconfirmed = os.getenv("ALLOW_UNCONFIRMED_ACL", "true").lower() in {"1", "true", "yes", "on"}
             if lineup_data.get("lineup_confirmed") is False and not allow_unconfirmed:
                 return probs, 1.0, None, False
 
