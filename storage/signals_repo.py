@@ -12,6 +12,19 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "apex_epl.db"
 
 
+def _sanitize(value, max_len: int = 500) -> str:
+    """
+    Sanitise une valeur avant insertion en DB.
+    Retire les caractères de contrôle et tronque si nécessaire.
+    """
+    if value is None:
+        return ""
+    s = str(value)
+    # Retirer caractères de contrôle (sauf tab/newline)
+    s = re.sub(r"[--]", "", s)
+    return s[:max_len]
+
+
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""

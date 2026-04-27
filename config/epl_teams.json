@@ -1,0 +1,32 @@
+{
+  "season": "2025-26",
+  "tiers": {
+    "1": ["Arsenal", "Manchester City", "Liverpool"],
+    "2": ["Chelsea", "Newcastle United", "Manchester United", "Tottenham"],
+    "3": ["Aston Villa", "Brighton", "Fulham", "West Ham", "Bournemouth"],
+    "4": ["Brentford", "Crystal Palace", "Everton", "Wolves"],
+    "5": ["Burnley", "Sunderland", "Leeds United", "Southampton",
+          "Nottingham Forest", "Leicester City", "Ipswich Town"]
+  },
+  "big_six": [
+    "Arsenal", "Chelsea", "Liverpool",
+    "Manchester City", "Manchester United", "Tottenham"
+  ],
+  "large_stadiums": {
+    "Manchester City":  75000,
+    "Arsenal":          60704,
+    "Liverpool":        61276,
+    "Manchester United": 74310,
+    "Tottenham":        62850
+  },
+  "name_aliases": {
+    "Man Utd": "Manchester United",
+    "Man City": "Manchester City",
+    "Wolves": "Wolverhampton Wanderers",
+    "Nottm Forest": "Nottingham Forest",
+    "Spurs": "Tottenham",
+    "Newcastle": "Newcastle United",
+    "Brighton & Hove Albion": "Brighton",
+    "West Ham United": "West Ham"
+  }
+}

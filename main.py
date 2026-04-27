@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
+import functools
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.error import Conflict, NetworkError
@@ -12,11 +13,62 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 load_dotenv()
 
+import uuid
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+def _pipeline_logger(match_name: str = "") -> logging.LoggerAdapter:
+    """Logger avec contexte pipeline pour corrélation."""
+    run_id = str(uuid.uuid4())[:8]
+    extra = {"run_id": run_id, "match": match_name}
+    return logging.LoggerAdapter(
+        logging.getLogger("apex.pipeline"),
+        extra
+    )
+
+# ── Contrôle d'accès ─────────────────────────────────────────────
+def _get_allowed_users() -> set[int]:
+    """
+    Lit TELEGRAM_ALLOWED_USERS (IDs séparés par virgule).
+    Si vide → aucune restriction (mode canal public).
+    """
+    raw = os.getenv("TELEGRAM_ALLOWED_USERS", "")
+    if not raw.strip():
+        return set()  # pas de restriction
+    ids = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if part.isdigit():
+            ids.add(int(part))
+    return ids
+
+
+def admin_only(func):
+    """
+    Décorateur qui vérifie que l'utilisateur est autorisé.
+    Si TELEGRAM_ALLOWED_USERS est vide, tout utilisateur est accepté.
+    """
+    @functools.wraps(func)
+    async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        allowed = _get_allowed_users()
+        if allowed:
+            user = update.effective_user
+            user_id = user.id if user else None
+            if user_id not in allowed:
+                logger.warning(f"Accès refusé : user_id={user_id}")
+                await ctx.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="Accès non autorisé."
+                )
+                return
+        return await func(update, ctx)
+    return wrapper
+
 
 BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN", "") or os.getenv("BOT_TOKEN", "")
 CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "") or os.getenv("CHAT_ID", "")
@@ -47,6 +99,31 @@ def get_tier(team_name):
     if team_name in TIER_3: return 3
     if team_name in TIER_4: return 4
     return 5
+
+
+def _load_team_config():
+    """Charge la config des équipes depuis config/epl_teams.json."""
+    import json
+    from pathlib import Path
+    config_path = Path(__file__).parent / "config" / "epl_teams.json"
+    try:
+        with open(config_path) as f:
+            return json.load(f)
+    except Exception:
+        return {"tiers": {}, "big_six": [], "large_stadiums": {}}
+
+_TEAM_CONFIG = _load_team_config()
+
+
+def get_tier(team_name: str) -> int:
+    """Retourne le Tier EPL d'une équipe depuis config/epl_teams.json."""
+    # Résoudre les alias
+    aliases = _TEAM_CONFIG.get("name_aliases", {})
+    resolved = aliases.get(team_name, team_name)
+    for tier_str, teams in _TEAM_CONFIG.get("tiers", {}).items():
+        if resolved in teams:
+            return int(tier_str)
+    return 4  # défaut mid-table si non trouvé
 
 
 def _acl_check(injured):
@@ -268,22 +345,27 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     from interfaces.telegram_commands import handle_help
     await handle_help(ctx.bot, update.effective_chat.id)
 
+@admin_only
 async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     from interfaces.telegram_commands import handle_status
     await handle_status(ctx.bot, update.effective_chat.id)
 
+@admin_only
 async def cmd_analyse(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     from interfaces.telegram_commands import handle_analyse
     await handle_analyse(ctx.bot, update.effective_chat.id, run_pipeline)
 
+@admin_only
 async def cmd_bilan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     from interfaces.telegram_commands import handle_bilan
     await handle_bilan(ctx.bot, update.effective_chat.id)
 
+@admin_only
 async def cmd_api(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     from interfaces.telegram_commands import handle_api
     await handle_api(ctx.bot, update.effective_chat.id)
 
+@admin_only
 async def cmd_refresh(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     from interfaces.telegram_commands import handle_refresh
     await handle_refresh(ctx.bot, update.effective_chat.id)

@@ -1,5 +1,26 @@
 import os
+import re
 import logging
+
+# Validation
+MAX_CMD_LENGTH = 50
+
+def _sanitize_input(text: str) -> str:
+    """Sanitise un input utilisateur Telegram."""
+    if not text:
+        return ""
+    # Retirer caractères de contrôle
+    text = re.sub(r"[-]", "", text)
+    return text[:MAX_CMD_LENGTH].strip()
+
+
+def _validate_command(text: str) -> bool:
+    """Vérifie qu'une commande est valide."""
+    if not text or not text.startswith("/"):
+        return False
+    if len(text) > MAX_CMD_LENGTH:
+        return False
+    return True
 import sqlite3
 import requests
 from datetime import datetime, timezone

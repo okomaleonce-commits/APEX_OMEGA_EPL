@@ -1,24 +1,26 @@
 """
-APEX-OMEGA-EPL — Render Entrypoint v2
+APEX-OMEGA-EPL — Render Entrypoint v3
 
 Start Command Render : python app_hotfixed.py
 
 Variables d'environnement requises :
-  TELEGRAM_BOT_TOKEN          — Token BotFather
+  TELEGRAM_BOT_TOKEN          — Token BotFather (ne jamais logger)
   TELEGRAM_CHANNEL_ID         — ID du canal
-  FOOTBALL_DATA_API_KEY       — Clé api-football.com (dashboard.api-football.com)
+  FOOTBALL_DATA_API_KEY       — Clé api-football.com
   RENDER_DISK_PATH            — /var/data
   PYTHON_VERSION              — 3.11.0
 
-Variables optionnelles (defaults permissifs) :
-  ALLOW_REFERENCE_ODDS_SIGNALS  — true  (signaux même sans vraies cotes)
-  ALLOW_UNCONFIRMED_ACL         — true  (ACL actif même sans compos confirmées)
-  ENABLE_FREE_AUTO_DATA         — true  (fallback football-data.org)
-  FOOTBALL_DATA_ORG_TOKEN       — Token football-data.org (gratuit)
+Variables optionnelles :
+  TELEGRAM_ALLOWED_USERS      — IDs autorisés séparés par virgule (ex: 123456,789012)
+  ALLOW_REFERENCE_ODDS_SIGNALS — true (défaut)
+  ALLOW_UNCONFIRMED_ACL        — true (défaut)
+  ACL_MAX_INJURY_LIST_SIZE     — 5 (défaut)
+  FOOTBALL_DATA_ORG_TOKEN      — Token football-data.org (gratuit)
 """
 
 import os
 import logging
+
 import runtime_hotfix  # patches: odds params, ACL gate, verdict gate, free data
 
 logging.basicConfig(
@@ -27,14 +29,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Log des gates actifs au démarrage
-logger.info("=== APEX-OMEGA-EPL GATES ===")
-logger.info(f"ALLOW_REFERENCE_ODDS_SIGNALS : {os.getenv('ALLOW_REFERENCE_ODDS_SIGNALS', 'true (default)')}")
-logger.info(f"ALLOW_UNCONFIRMED_ACL        : {os.getenv('ALLOW_UNCONFIRMED_ACL', 'true (default)')}")
-logger.info(f"ENABLE_FREE_AUTO_DATA        : {os.getenv('ENABLE_FREE_AUTO_DATA', 'true (default)')}")
-logger.info(f"FOOTBALL_DATA_ORG_TOKEN      : {'SET' if os.getenv('FOOTBALL_DATA_ORG_TOKEN') else 'NOT SET'}")
-logger.info(f"FOOTBALL_DATA_API_KEY        : {'SET (' + os.getenv('FOOTBALL_DATA_API_KEY','')[:4] + '...)' if os.getenv('FOOTBALL_DATA_API_KEY') else 'NOT SET'}")
-logger.info("============================")
+
+def _is_set(var: str) -> str:
+    """Retourne 'SET' ou 'NOT SET' sans jamais logger la valeur."""
+    return "SET" if os.getenv(var) else "NOT SET"
+
+
+# Log de démarrage — aucune valeur sensible exposée
+logger.info("=== APEX-OMEGA-EPL DÉMARRAGE ===")
+logger.info(f"TELEGRAM_BOT_TOKEN           : {_is_set('TELEGRAM_BOT_TOKEN')}")
+logger.info(f"TELEGRAM_CHANNEL_ID          : {_is_set('TELEGRAM_CHANNEL_ID')}")
+logger.info(f"FOOTBALL_DATA_API_KEY        : {_is_set('FOOTBALL_DATA_API_KEY')}")
+logger.info(f"TELEGRAM_ALLOWED_USERS       : {_is_set('TELEGRAM_ALLOWED_USERS')}")
+logger.info(f"ALLOW_REFERENCE_ODDS_SIGNALS : {os.getenv('ALLOW_REFERENCE_ODDS_SIGNALS', 'true (défaut)')}")
+logger.info(f"ALLOW_UNCONFIRMED_ACL        : {os.getenv('ALLOW_UNCONFIRMED_ACL', 'true (défaut)')}")
+logger.info(f"ACL_MAX_INJURY_LIST_SIZE     : {os.getenv('ACL_MAX_INJURY_LIST_SIZE', '5 (défaut)')}")
+logger.info("================================")
 
 import main
 

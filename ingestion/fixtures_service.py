@@ -286,3 +286,20 @@ def test_api_key():
             logger.warning(f"test_api_key [{mode}]: {e}")
 
     return {"status": "ERREUR", "detail": "Auth echouee — verifier la cle dans Render > Environment"}
+
+
+def _validate_cache_integrity(path: Path) -> bool:
+    """
+    Valide qu'un fichier cache est un JSON valide et non vide.
+    Protège contre la corruption silencieuse.
+    """
+    if not path.exists():
+        return False
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return isinstance(data, (dict, list))
+    except (json.JSONDecodeError, OSError):
+        logger.warning(f"Cache corrompu détecté: {path.name} — suppression")
+        path.unlink(missing_ok=True)
+        return False

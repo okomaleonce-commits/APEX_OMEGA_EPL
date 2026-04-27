@@ -1,8 +1,15 @@
+# Core
 numpy==1.26.4
 requests==2.31.0
+
+# Telegram
 python-telegram-bot==20.7
 httpx==0.25.2
+
+# Scheduler
 APScheduler==3.10.4
+
+# Utils
 beautifulsoup4==4.12.3
 python-dotenv==1.0.1
 pydantic==1.10.13
