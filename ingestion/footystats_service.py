@@ -24,7 +24,9 @@ CACHE_DIR = DATA_DIR / "cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 BASE_URL      = "https://api.football-data-api.com"
-EPL_SEASON_ID = 2012   # FootyStats season ID pour EPL 2025/26
+# FootyStats season IDs — EPL: 2012 (2024/25), will auto-discover 2025/26
+# If 2012 fails, the service tries to find the correct season dynamically
+EPL_SEASON_ID = int(os.getenv("FOOTYSTATS_EPL_SEASON_ID", "10771"))  # 2025/26 probable ID
 
 
 def _cache_path(name: str) -> Path:
@@ -81,8 +83,9 @@ def get_team_stats(team_name: str) -> dict:
         if isinstance(data, dict) and data:
             return data
 
+    sid  = discover_epl_season_id()
     data = _get("league-teams", {
-        "season_id": EPL_SEASON_ID,
+        "season_id": sid,
         "include":   "stats",
     })
 
@@ -158,8 +161,9 @@ def get_team_xg_matchlog(team_name: str, n: int = 6) -> list[dict]:
         if isinstance(data, list):
             return data
 
+    sid  = discover_epl_season_id()
     data = _get("league-matches", {
-        "season_id": EPL_SEASON_ID,
+        "season_id": sid,
         "team_name": team_name,
         "status":    "complete",
     })
@@ -263,20 +267,54 @@ def calculate_ccr(team_name: str, n: int = 5) -> dict:
 # ── Disponibilité API ─────────────────────────────────────────────
 
 def test_footystats() -> dict:
-    """Teste la clé FootyStats et retourne l'état du service."""
+    """Teste la clé FootyStats — essaie plusieurs endpoints pour diagnostic."""
     if not FOOTYSTATS_KEY:
         return {"status": "NOT_CONFIGURED", "detail": "FOOTYSTATS_KEY non définie"}
 
-    data = _get("league-season", {"season_id": EPL_SEASON_ID})
+    # Test 1 : endpoint /league-list (ne nécessite pas de season_id)
+    data = _get("league-list", {"country_id": 2})  # 2 = England
     if data and "data" in data:
+        leagues = data["data"]
+        epl = next((l for l in leagues if "premier" in l.get("name", "").lower()), None)
+        if epl:
+            season_id = epl.get("season", {}).get("id", EPL_SEASON_ID)
+            return {
+                "status": "OK",
+                "detail": f"FootyStats OK | EPL season_id={season_id}",
+                "season_id": season_id,
+            }
+        return {"status": "OK", "detail": f"FootyStats OK | {len(leagues)} ligues trouvées"}
+
+    # Test 2 : endpoint /today-matches (basique)
+    data2 = _get("today-matches", {})
+    if data2 and not data2.get("error"):
+        return {"status": "OK", "detail": "FootyStats OK (today-matches)"}
+
+    # Test 3 : vérifier le message d'erreur
+    if data and data.get("error"):
         return {
-            "status": "OK",
-            "detail": f"FootyStats EPL season {EPL_SEASON_ID} accessible",
+            "status": "ERROR",
+            "detail": f"FootyStats erreur: {data.get('error', 'unknown')}",
         }
+
     return {
         "status": "ERROR",
-        "detail": "Clé invalide ou plan insuffisant",
+        "detail": "Clé invalide, quota dépassé, ou plan insuffisant",
     }
+
+
+def discover_epl_season_id() -> int:
+    """Découvre le season_id EPL courant via FootyStats."""
+    data = _get("league-list", {"country_id": 2})
+    if data and "data" in data:
+        for league in data["data"]:
+            name = league.get("name", "").lower()
+            if "premier league" in name and "england" in league.get("country", "").lower():
+                sid = league.get("season", {}).get("id")
+                if sid:
+                    logger.info(f"FootyStats EPL season_id découvert: {sid}")
+                    return int(sid)
+    return EPL_SEASON_ID  # fallback
 
 
 # ── Helpers ───────────────────────────────────────────────────────

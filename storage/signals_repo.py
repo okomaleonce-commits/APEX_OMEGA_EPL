@@ -49,7 +49,8 @@ def init_db():
                 created_at    TEXT,
                 resolved      INTEGER DEFAULT 0,
                 result        TEXT,
-                pnl_pct       REAL
+                pnl_pct       REAL,
+                UNIQUE(fixture_id, market) ON CONFLICT IGNORE
             )
         """)
         conn.execute("""
@@ -74,6 +75,15 @@ def init_db():
                 status     TEXT
             )
         """)
+        # Migration : ajouter UNIQUE si absent (pour les DB existantes)
+        try:
+            conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                idx_signals_fixture_market ON signals(fixture_id, market)
+            """)
+        except Exception:
+            pass  # Index deja present ou DB vide
+
         conn.commit()
     logger.info(f"DB initialisee: {DB_PATH}")
 
@@ -81,7 +91,7 @@ def init_db():
 def save_signal(data):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.execute("""
-            INSERT INTO signals (
+            INSERT OR IGNORE INTO signals (
                 fixture_id, kickoff_utc, home_team, away_team,
                 market, outcome, model_prob, demargin_prob,
                 raw_odds, edge, max_stake_pct, status,

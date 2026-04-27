@@ -234,5 +234,19 @@ async def handle_refresh(bot, chat_id):
         msg += "\n\nStats corrompus supprimes:\n" + "\n".join(f"  - {c}" for c in corrupted)
     if not deleted and not corrupted:
         msg = "Aucun cache a supprimer."
+    # Purger les doublons DB
+    try:
+        from storage.db_cleanup import cleanup as db_cleanup
+        import io, sys
+        buf = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = buf
+        db_cleanup()
+        sys.stdout = old_stdout
+        db_msg = buf.getvalue().strip()
+        msg += "\n\nDB nettoyée:\n" + db_msg
+    except Exception as e:
+        msg += f"\n\nDB cleanup: {e}"
+
     msg += "\n\nLancez /analyse pour recharger."
     await bot.send_message(chat_id=chat_id, text=msg)
