@@ -154,7 +154,6 @@ def apply_odds_service_patch():
                     params={
                         "league":    odds_service.EPL_LEAGUE_ID,
                         "season":    odds_service.EPL_SEASON,
-                        "next":      10,   # prochains matchs EPL
                         "bookmaker": bookmaker,
                         "page":      page,
                     },

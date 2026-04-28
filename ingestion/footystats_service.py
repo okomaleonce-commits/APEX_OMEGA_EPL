@@ -24,6 +24,41 @@ CACHE_DIR = DATA_DIR / "cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 BASE_URL      = "https://api.football-data-api.com"
+
+# Mapping noms APEX → noms FootyStats (suffixes FC/AFC/United courants)
+FOOTYSTATS_NAME_MAP = {
+    "Arsenal":               ["Arsenal", "Arsenal FC"],
+    "Manchester City":       ["Manchester City", "Manchester City FC", "Man City"],
+    "Liverpool":             ["Liverpool", "Liverpool FC"],
+    "Chelsea":               ["Chelsea", "Chelsea FC"],
+    "Newcastle United":      ["Newcastle United", "Newcastle", "Newcastle United FC"],
+    "Manchester United":     ["Manchester United", "Manchester Utd", "Man United", "Manchester United FC"],
+    "Tottenham":             ["Tottenham", "Tottenham Hotspur", "Spurs", "Tottenham Hotspur FC"],
+    "Aston Villa":           ["Aston Villa", "Aston Villa FC"],
+    "Brighton":              ["Brighton", "Brighton & Hove Albion", "Brighton and Hove Albion"],
+    "Fulham":                ["Fulham", "Fulham FC"],
+    "West Ham":              ["West Ham", "West Ham United", "West Ham United FC"],
+    "Bournemouth":           ["Bournemouth", "AFC Bournemouth", "Bournemouth FC"],
+    "Brentford":             ["Brentford", "Brentford FC"],
+    "Crystal Palace":        ["Crystal Palace", "Crystal Palace FC"],
+    "Everton":               ["Everton", "Everton FC"],
+    "Wolves":                ["Wolves", "Wolverhampton Wanderers", "Wolverhampton", "Wolves FC"],
+    "Burnley":               ["Burnley", "Burnley FC"],
+    "Sunderland":            ["Sunderland", "Sunderland AFC"],
+    "Leeds United":          ["Leeds United", "Leeds", "Leeds United FC"],
+    "Southampton":           ["Southampton", "Southampton FC"],
+    "Nottingham Forest":     ["Nottingham Forest", "Nottm Forest", "Nottingham Forest FC"],
+    "Leicester City":        ["Leicester City", "Leicester", "Leicester City FC"],
+    "Ipswich Town":          ["Ipswich Town", "Ipswich", "Ipswich Town FC"],
+}
+
+def _get_name_variants(apex_name: str) -> list[str]:
+    """Retourne toutes les variantes du nom d'équipe pour FootyStats."""
+    variants = FOOTYSTATS_NAME_MAP.get(apex_name, [apex_name])
+    # Ajouter aussi le nom tel quel
+    if apex_name not in variants:
+        variants = [apex_name] + variants
+    return variants
 # FootyStats season IDs — EPL: 2012 (2024/25), will auto-discover 2025/26
 # If 2012 fails, the service tries to find the correct season dynamically
 EPL_SEASON_ID = int(os.getenv("FOOTYSTATS_EPL_SEASON_ID", "10771"))  # 2025/26 probable ID
@@ -94,17 +129,27 @@ def get_team_stats(team_name: str) -> dict:
         logger.warning(f"FootyStats: aucune équipe retournée (clé invalide ou plan?)")
         return {}
 
-    # Chercher l'équipe par nom
+    # Chercher l'équipe par nom (essaie toutes les variantes)
+    variants = _get_name_variants(team_name)
     for team in teams:
-        name = team.get("cleanName", "") or team.get("name", "")
-        if _fuzzy_match(team_name, name):
-            stats = team.get("stats", {})
-            result = _parse_team_stats(team, stats)
-            cache.write_text(json.dumps(result, indent=2))
-            logger.info(f"FootyStats: stats {team_name} OK (xG for={result.get('xg_for_avg')})")
-            return result
+        fs_name  = (team.get("cleanName") or team.get("name") or "").strip()
+        fs_short = (team.get("shortName") or "").strip()
+        for variant in variants:
+            if (_fuzzy_match(variant, fs_name) or
+                _fuzzy_match(variant, fs_short)):
+                stats  = team.get("stats", {})
+                result = _parse_team_stats(team, stats)
+                result["fs_matched_name"] = fs_name
+                cache.write_text(json.dumps(result, indent=2))
+                logger.info(
+                    f"FootyStats: {team_name} → '{fs_name}' "
+                    f"xG={result.get('xg_for_avg')}/{result.get('xg_against_avg')}"
+                )
+                return result
 
-    logger.warning(f"FootyStats: équipe '{team_name}' non trouvée")
+    # Log diagnostic : montrer les noms disponibles pour faciliter le debug
+    available = [t.get("cleanName") or t.get("name","") for t in teams[:8]]
+    logger.warning(f"FootyStats: '{team_name}' non trouvée. Dispo: {available}")
     return {}
 
 
