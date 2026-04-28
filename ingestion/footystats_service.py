@@ -277,7 +277,10 @@ def test_footystats() -> dict:
         leagues = data["data"]
         epl = next((l for l in leagues if "premier" in l.get("name", "").lower()), None)
         if epl:
-            season_id = epl.get("season", {}).get("id", EPL_SEASON_ID)
+            season_raw = epl.get("season", {})
+            if isinstance(season_raw, list):
+                season_raw = season_raw[-1] if season_raw else {}
+            season_id = (season_raw.get("id") or season_raw.get("season_id") or EPL_SEASON_ID) if isinstance(season_raw, dict) else EPL_SEASON_ID
             return {
                 "status": "OK",
                 "detail": f"FootyStats OK | EPL season_id={season_id}",
@@ -304,16 +307,42 @@ def test_footystats() -> dict:
 
 
 def discover_epl_season_id() -> int:
-    """Découvre le season_id EPL courant via FootyStats."""
+    """
+    Découvre le season_id EPL courant via FootyStats.
+    FootyStats retourne "season" comme une liste ou un dict selon le plan.
+    """
+    cache = _cache_path("epl_season_id")
+    if _is_fresh(cache, ttl_hours=24):
+        try:
+            import json as _json
+            data = _json.loads(cache.read_text())
+            if isinstance(data, int) and data > 0:
+                return data
+        except Exception:
+            pass
+
     data = _get("league-list", {"country_id": 2})
     if data and "data" in data:
         for league in data["data"]:
-            name = league.get("name", "").lower()
-            if "premier league" in name and "england" in league.get("country", "").lower():
-                sid = league.get("season", {}).get("id")
+            name    = league.get("name", "").lower()
+            country = league.get("country", "").lower()
+            if "premier" not in name:
+                continue
+
+            # "season" peut être un dict OU une liste de dicts selon le plan
+            season_raw = league.get("season", {})
+            if isinstance(season_raw, list):
+                # Prendre la saison la plus récente (dernière ou première)
+                season_raw = season_raw[-1] if season_raw else {}
+            if isinstance(season_raw, dict):
+                sid = season_raw.get("id") or season_raw.get("season_id")
                 if sid:
                     logger.info(f"FootyStats EPL season_id découvert: {sid}")
+                    import json as _json
+                    cache.write_text(_json.dumps(int(sid)))
                     return int(sid)
+
+    logger.warning(f"FootyStats: season_id non trouvé, utilisation du fallback {EPL_SEASON_ID}")
     return EPL_SEASON_ID  # fallback
 
 
